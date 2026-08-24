@@ -313,21 +313,19 @@
                 <artifactId>maven-deploy-plugin</artifactId>
                 <version>${maven-deploy-plugin.version}</version>
             </plugin>
-            <!-- Exactly one aggregate CycloneDX SBOM for the whole reactor, emitted by
-                 the root project only. inherited=false keeps the module from producing
-                 a duplicate child SBOM. It attaches to the parent artifact, which is
-                 why the parent must stay in the release bundle. -->
+            <!-- Publish one module-rooted CycloneDX SBOM beside every deployed artifact.
+                 The release-manager independently certifies these files against a clean
+                 external consumer before release. -->
             <plugin>
                 <groupId>org.cyclonedx</groupId>
                 <artifactId>cyclonedx-maven-plugin</artifactId>
                 <version>${cyclonedx-maven-plugin.version}</version>
-                <inherited>false</inherited>
                 <executions>
                     <execution>
-                        <id>aggregate-sbom</id>
-                        <phase>package</phase>
+                        <id>consumer-sbom</id>
+                        <phase>verify</phase>
                         <goals>
-                            <goal>makeAggregateBom</goal>
+                            <goal>makeBom</goal>
                         </goals>
                     </execution>
                 </executions>
@@ -343,9 +341,10 @@
                     <schemaVersion>1.6</schemaVersion>
                     <outputFormat>json</outputFormat>
                     <outputName>${project.artifactId}-${project.version}-cyclonedx</outputName>
+                    <classifier>cyclonedx</classifier>
                     <includeCompileScope>true</includeCompileScope>
                     <includeRuntimeScope>true</includeRuntimeScope>
-                    <includeProvidedScope>true</includeProvidedScope>
+                    <includeProvidedScope>false</includeProvidedScope>
                     <includeSystemScope>false</includeSystemScope>
                     <includeTestScope>false</includeTestScope>
                 </configuration>
@@ -439,14 +438,11 @@
                         <extensions>true</extensions>
                         <configuration>
                             <publishingServerId>central</publishingServerId>
-                            <!-- No <excludeArtifacts>. It previously excluded
-                                 claude-agent-sdk-parent, which is the artifact the
-                                 aggregate SBOM attaches to, so the SBOM could never
-                                 reach Central. Its other two entries named
+                            <!-- No <excludeArtifacts>. The parent and module both carry
+                                 consumer-scoped SBOM attachments. The prior exclusions also named
                                  examples-parent and hello-world, which were never
                                  reactor modules and have since moved to the tutorial
-                                 repository. The reactor now builds one deployable
-                                 module, so there is nothing left to exclude. -->
+                                 repository, so there is nothing left to exclude. -->
                             <autoPublish>true</autoPublish>
                         </configuration>
                     </plugin>

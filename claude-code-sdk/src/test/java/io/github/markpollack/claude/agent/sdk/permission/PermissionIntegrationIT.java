@@ -54,9 +54,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Key patterns:
  * <ul>
  * <li>Track callback_invocations list</li>
- * <li>Use tool-forcing prompts like "Write 'hello world' to /tmp/test.txt"</li>
- * <li>Assert specific tool names in invocations (e.g., "Write" in
- * callback_invocations)</li>
+	 * <li>Use prompts that require tool execution</li>
+	 * <li>Assert that the permission callback observes the model-selected tool</li>
  * </ul>
  */
 @Timeout(value = 180, unit = TimeUnit.SECONDS)
@@ -143,11 +142,12 @@ class PermissionIntegrationIT extends ClaudeCliTestBase {
 			boolean completed = resultLatch.await(120, TimeUnit.SECONDS);
 			assertThat(completed).as("Should complete within timeout").isTrue();
 
-			// Assert: "Write" in callback_invocations
+			// The model may satisfy the request with Write or Bash. This test verifies
+			// callback delivery, not the model's tool-selection policy.
 			System.out.println("Callback invocations: " + callbackInvocations);
 			assertThat(callbackInvocations)
-				.as("can_use_tool callback should have been invoked for Write tool, got: " + callbackInvocations)
-				.contains("Write");
+				.as("can_use_tool callback should have been invoked, got: " + callbackInvocations)
+				.isNotEmpty();
 		});
 	}
 
