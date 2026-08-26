@@ -494,6 +494,27 @@ public class StreamingTransport implements AutoCloseable {
 			command.add("--include-partial-messages");
 		}
 
+		// Forward subagent text and thinking into the message stream
+		if (options.isForwardSubagentText()) {
+			command.add("--forward-subagent-text");
+		}
+
+		// Emit hook lifecycle events into the message stream
+		if (options.isIncludeHookEvents()) {
+			command.add("--include-hook-events");
+		}
+
+		// Auto-compact window sizing (CLI-side conversation policy)
+		if (options.getAutocompact() != null && !options.getAutocompact().isBlank()) {
+			command.add("--autocompact");
+			command.add(options.getAutocompact());
+		}
+
+		// Start with all customizations disabled
+		if (options.isSafeMode()) {
+			command.add("--safe-mode");
+		}
+
 		// Add agents JSON for multi-agent coordination (Task tool with subagents)
 		if (options.getAgents() != null && !options.getAgents().trim().isEmpty()) {
 			command.add("--agents");

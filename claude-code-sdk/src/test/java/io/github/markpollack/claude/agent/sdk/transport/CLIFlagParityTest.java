@@ -607,6 +607,155 @@ class CLIFlagParityTest {
 	}
 
 	// ============================================================
+	// Stream Content Flags
+	// ============================================================
+
+	@Nested
+	@DisplayName("Stream Content Flags")
+	class StreamContentFlags {
+
+		@Test
+		@DisplayName("--forward-subagent-text flag when enabled")
+		void forwardSubagentTextFlag() {
+			try (StreamingTransport transport = createTransport()) {
+				CLIOptions options = CLIOptions.builder().forwardSubagentText(true).build();
+				List<String> cmd = transport.buildStreamingCommand(options);
+				assertThat(cmd).contains("--forward-subagent-text");
+			}
+		}
+
+		@Test
+		@DisplayName("--forward-subagent-text flag not present when disabled")
+		void forwardSubagentTextFlagNotPresent() {
+			try (StreamingTransport transport = createTransport()) {
+				CLIOptions options = CLIOptions.builder().forwardSubagentText(false).build();
+				List<String> cmd = transport.buildStreamingCommand(options);
+				assertThat(cmd).doesNotContain("--forward-subagent-text");
+			}
+		}
+
+		@Test
+		@DisplayName("--forward-subagent-text flag absent by default")
+		void forwardSubagentTextDefaultsOff() {
+			try (StreamingTransport transport = createTransport()) {
+				List<String> cmd = transport.buildStreamingCommand(CLIOptions.builder().build());
+				assertThat(cmd).doesNotContain("--forward-subagent-text");
+			}
+		}
+
+		@Test
+		@DisplayName("--include-hook-events flag when enabled")
+		void includeHookEventsFlag() {
+			try (StreamingTransport transport = createTransport()) {
+				CLIOptions options = CLIOptions.builder().includeHookEvents(true).build();
+				List<String> cmd = transport.buildStreamingCommand(options);
+				assertThat(cmd).contains("--include-hook-events");
+			}
+		}
+
+		@Test
+		@DisplayName("--include-hook-events flag not present when disabled")
+		void includeHookEventsFlagNotPresent() {
+			try (StreamingTransport transport = createTransport()) {
+				CLIOptions options = CLIOptions.builder().includeHookEvents(false).build();
+				List<String> cmd = transport.buildStreamingCommand(options);
+				assertThat(cmd).doesNotContain("--include-hook-events");
+			}
+		}
+
+		@Test
+		@DisplayName("--include-hook-events flag absent by default")
+		void includeHookEventsDefaultsOff() {
+			try (StreamingTransport transport = createTransport()) {
+				List<String> cmd = transport.buildStreamingCommand(CLIOptions.builder().build());
+				assertThat(cmd).doesNotContain("--include-hook-events");
+			}
+		}
+
+	}
+
+	// ============================================================
+	// Conversation and Posture Policy Flags
+	// ============================================================
+
+	@Nested
+	@DisplayName("Conversation and Posture Policy Flags")
+	class ConversationPolicyFlags {
+
+		@Test
+		@DisplayName("--autocompact flag with auto")
+		void autocompactAuto() {
+			try (StreamingTransport transport = createTransport()) {
+				CLIOptions options = CLIOptions.builder().autocompact("auto").build();
+				List<String> cmd = transport.buildStreamingCommand(options);
+				assertThat(cmd).contains("--autocompact");
+				assertThat(cmd.get(cmd.indexOf("--autocompact") + 1)).isEqualTo("auto");
+			}
+		}
+
+		@Test
+		@DisplayName("--autocompact flag with a token count")
+		void autocompactTokens() {
+			try (StreamingTransport transport = createTransport()) {
+				CLIOptions options = CLIOptions.builder().autocompact("50000").build();
+				List<String> cmd = transport.buildStreamingCommand(options);
+				assertThat(cmd).contains("--autocompact");
+				assertThat(cmd.get(cmd.indexOf("--autocompact") + 1)).isEqualTo("50000");
+			}
+		}
+
+		@Test
+		@DisplayName("--autocompact flag not present when null")
+		void autocompactNull() {
+			try (StreamingTransport transport = createTransport()) {
+				CLIOptions options = CLIOptions.builder().autocompact(null).build();
+				List<String> cmd = transport.buildStreamingCommand(options);
+				assertThat(cmd).doesNotContain("--autocompact");
+			}
+		}
+
+		@Test
+		@DisplayName("--autocompact flag not present when blank")
+		void autocompactBlank() {
+			try (StreamingTransport transport = createTransport()) {
+				CLIOptions options = CLIOptions.builder().autocompact("   ").build();
+				List<String> cmd = transport.buildStreamingCommand(options);
+				assertThat(cmd).doesNotContain("--autocompact");
+			}
+		}
+
+		@Test
+		@DisplayName("--safe-mode flag when enabled")
+		void safeModeFlag() {
+			try (StreamingTransport transport = createTransport()) {
+				CLIOptions options = CLIOptions.builder().safeMode(true).build();
+				List<String> cmd = transport.buildStreamingCommand(options);
+				assertThat(cmd).contains("--safe-mode");
+			}
+		}
+
+		@Test
+		@DisplayName("--safe-mode flag not present when disabled")
+		void safeModeFlagNotPresent() {
+			try (StreamingTransport transport = createTransport()) {
+				CLIOptions options = CLIOptions.builder().safeMode(false).build();
+				List<String> cmd = transport.buildStreamingCommand(options);
+				assertThat(cmd).doesNotContain("--safe-mode");
+			}
+		}
+
+		@Test
+		@DisplayName("--safe-mode flag absent by default")
+		void safeModeDefaultsOff() {
+			try (StreamingTransport transport = createTransport()) {
+				List<String> cmd = transport.buildStreamingCommand(CLIOptions.builder().build());
+				assertThat(cmd).doesNotContain("--safe-mode");
+			}
+		}
+
+	}
+
+	// ============================================================
 	// Comprehensive Parity Test
 	// ============================================================
 

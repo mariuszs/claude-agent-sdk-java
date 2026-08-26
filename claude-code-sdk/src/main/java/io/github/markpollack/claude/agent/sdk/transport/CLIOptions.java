@@ -43,7 +43,11 @@ public record CLIOptions(String model, String systemPrompt, Integer maxTokens, I
 		// Advanced options for full Python SDK parity
 		List<Path> addDirs, String settings, String permissionPromptToolName, Map<String, String> extraArgs,
 		List<PluginConfig> plugins, Map<String, String> env, Integer maxBufferSize, String user,
-		StderrHandler stderrHandler, ToolPermissionCallback toolPermissionCallback) {
+		StderrHandler stderrHandler, ToolPermissionCallback toolPermissionCallback,
+		// Stream content options
+		boolean forwardSubagentText, boolean includeHookEvents,
+		// CLI-side conversation and posture policy
+		String autocompact, boolean safeMode) {
 
 	/** Default maximum buffer size for JSON parsing (1MB). */
 	public static final int DEFAULT_MAX_BUFFER_SIZE = 1024 * 1024;
@@ -109,7 +113,7 @@ public record CLIOptions(String model, String systemPrompt, Integer maxTokens, I
 		return new CLIOptions(null, null, null, null, Duration.ofMinutes(2), null, List.of(), List.of(),
 				PermissionMode.DANGEROUSLY_SKIP_PERMISSIONS, false, OutputFormat.JSON, List.of(), null, false, false,
 				null, Map.of(), null, null, null, null, false, null, List.of(), null, null, Map.of(), List.of(),
-				Map.of(), null, null, null, null);
+				Map.of(), null, null, null, null, false, false, null, false);
 	}
 
 	// Convenience getters
@@ -250,6 +254,22 @@ public record CLIOptions(String model, String systemPrompt, Integer maxTokens, I
 		return toolPermissionCallback;
 	}
 
+	public boolean isForwardSubagentText() {
+		return forwardSubagentText;
+	}
+
+	public boolean isIncludeHookEvents() {
+		return includeHookEvents;
+	}
+
+	public String getAutocompact() {
+		return autocompact;
+	}
+
+	public boolean isSafeMode() {
+		return safeMode;
+	}
+
 	public static class Builder {
 
 		private String model;
@@ -319,6 +339,14 @@ public record CLIOptions(String model, String systemPrompt, Integer maxTokens, I
 		private StderrHandler stderrHandler;
 
 		private ToolPermissionCallback toolPermissionCallback;
+
+		private boolean forwardSubagentText = false;
+
+		private boolean includeHookEvents = false;
+
+		private String autocompact;
+
+		private boolean safeMode = false;
 
 		public Builder model(String model) {
 			this.model = model;
@@ -666,12 +694,84 @@ public record CLIOptions(String model, String systemPrompt, Integer maxTokens, I
 			return this;
 		}
 
+		// ============================================================
+		// Stream content options
+		// ============================================================
+
+		/**
+		 * Sets whether subagent text and thinking are forwarded into the message stream
+		 * (--forward-subagent-text).
+		 *
+		 * <p>
+		 * When enabled, text and thinking produced by subagents launched through the Task
+		 * tool are surfaced in the stream rather than summarised away, so a consumer of
+		 * {@code AgentDefinition}-based subagents observes their intermediate output.
+		 * </p>
+		 * @param forwardSubagentText true to forward subagent text and thinking
+		 * @return this builder
+		 */
+		public Builder forwardSubagentText(boolean forwardSubagentText) {
+			this.forwardSubagentText = forwardSubagentText;
+			return this;
+		}
+
+		/**
+		 * Sets whether hook lifecycle events are included in the message stream
+		 * (--include-hook-events).
+		 *
+		 * <p>
+		 * Gives consumers visibility into hook execution that the SDK's
+		 * {@code HookRegistry} otherwise handles without surfacing.
+		 * </p>
+		 * @param includeHookEvents true to emit hook lifecycle events in the stream
+		 * @return this builder
+		 */
+		public Builder includeHookEvents(boolean includeHookEvents) {
+			this.includeHookEvents = includeHookEvents;
+			return this;
+		}
+
+		// ============================================================
+		// CLI-side conversation and posture policy
+		// ============================================================
+
+		/**
+		 * Sets the auto-compact window sizing policy (--autocompact).
+		 *
+		 * <p>
+		 * Accepts {@code "auto"} or a token count. This is a CLI-side conversation policy;
+		 * no SDK behaviour depends on it.
+		 * </p>
+		 * @param autocompact {@code "auto"} or a token count, or null to leave the flag off
+		 * @return this builder
+		 */
+		public Builder autocompact(String autocompact) {
+			this.autocompact = autocompact;
+			return this;
+		}
+
+		/**
+		 * Sets whether the session starts with all customizations disabled (--safe-mode).
+		 *
+		 * <p>
+		 * Useful for a locked-down programmatic session that should not pick up local
+		 * hooks, plugins, or other customizations.
+		 * </p>
+		 * @param safeMode true to start with all customizations disabled
+		 * @return this builder
+		 */
+		public Builder safeMode(boolean safeMode) {
+			this.safeMode = safeMode;
+			return this;
+		}
+
 		public CLIOptions build() {
 			return new CLIOptions(model, systemPrompt, maxTokens, maxThinkingTokens, timeout, tools, allowedTools,
 					disallowedTools, permissionMode, interactive, outputFormat, settingSources, agents, forkSession,
 					includePartialMessages, jsonSchema, mcpServers, maxTurns, maxBudgetUsd, fallbackModel,
 					appendSystemPrompt, continueConversation, resume, addDirs, settings, permissionPromptToolName,
-					extraArgs, plugins, env, maxBufferSize, user, stderrHandler, toolPermissionCallback);
+					extraArgs, plugins, env, maxBufferSize, user, stderrHandler, toolPermissionCallback,
+					forwardSubagentText, includeHookEvents, autocompact, safeMode);
 		}
 
 	}
