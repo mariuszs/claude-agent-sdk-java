@@ -46,24 +46,41 @@ cd claude-agent-sdk-java
 ./mvnw clean verify
 ```
 
-`clean verify` runs the deterministic unit suite and then the integration tests, which
-drive a real Claude CLI and consume model usage. To build without them:
+`clean verify` is deterministic and free: it runs the unit suite plus the credential-free
+integration tests. It needs the Claude CLI binary on the PATH, but makes no authenticated
+or paid calls.
+
+The integration tests that drive a real Claude CLI against the Anthropic API are tagged
+`live` and are **excluded by default**. To include them — this requires
+`ANTHROPIC_API_KEY` and consumes model usage:
 
 ```bash
-./mvnw clean verify -DskipITs
+./mvnw clean verify -Dfailsafe.excluded.groups=
 ```
 
 `scripts/standalone-consumer-gate.sh` checks the shape an ordinary consumer receives —
 dependency floors, published POM, Java 21 artifact shape — with no credentials and no
 model calls.
 
+See [RELEASING.md](RELEASING.md) for which checks gate a release and when a live run is
+required.
+
 ## Compatibility
 
-Verified against Claude Code CLI 2.1.235 for the capabilities the SDK exposes. The CLI
-moves faster than this SDK models it: flags it has added recently — `--cloud`,
-`--teleport`, `--environment`, `--bg`/`--background`, `--safe-mode`, `--autocompact`,
-`--forward-subagent-text`, `--ax-screen-reader` — have no first-class builder method and
-are reachable through `extraArgs`.
+Verified against Claude Code CLI 2.1.235 for the capabilities the SDK exposes, and
+re-confirmed against 2.1.246.
+
+`--forward-subagent-text`, `--include-hook-events`, `--autocompact` and `--safe-mode` now
+have first-class builder methods (`forwardSubagentText`, `includeHookEvents`,
+`autocompact`, `safeMode`).
+
+`--cloud`, `--environment`, `--teleport`, `--bg`/`--background` and `--ax-screen-reader`
+are deliberately **not** modelled. The first four are a different execution model — a
+cloud/remote session, or a process the SDK does not own the lifecycle of — and the last is
+interactive-UI-only, while the SDK always runs `--output-format stream-json`. Each decline
+is recorded with its reason in `CLIFlagParityIT.DECLINED_FLAGS`. All of them, and any flag
+the CLI ships that this SDK has not modelled, remain reachable through
+`CLIOptions.extraArgs`.
 
 ## License
 

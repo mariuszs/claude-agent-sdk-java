@@ -19,9 +19,14 @@ jobs:
       java-version: '21'
       # Release verification runs the tests. A release is the last place to skip them.
       skip-tests: false
-      # ...and running the tests means running the failsafe suite, whose 13 IT classes
-      # all drive a real Claude CLI. Without this, release verification fails before it
-      # deploys anything. Same install ci.yml uses.
+      # The Claude CLI is installed so CLIFlagParityIT can read `claude --help` and
+      # keep criticalSdkFlagsShouldBeInCli a hard gate on the release candidate. The
+      # paid "live" IT classes are excluded by default (failsafe.excluded.groups),
+      # so release verification itself is credential-free and deterministic.
+      #
+      # Live evidence for a candidate comes from live-integration.yml, run against the
+      # exact candidate SHA. RELEASING.md states when a fresh live run is required and
+      # when existing exact-SHA evidence may be reused.
       agent-clis: 'claude'
       # Curated, tracked notes rather than a generated commit list.
       release-notes-file: release-notes/${{ inputs.version }}.md
@@ -30,4 +35,5 @@ jobs:
       MAVEN_PASSWORD: ${{ secrets.MAVEN_PASSWORD }}
       GPG_SECRET_KEY: ${{ secrets.GPG_SECRET_KEY }}
       GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
-      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      # ANTHROPIC_API_KEY deliberately not passed: the release job does not re-run the
+      # live suite. See RELEASING.md.

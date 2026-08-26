@@ -18,6 +18,7 @@ package io.github.markpollack.claude.agent.sdk.mcp;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Tag;
 import io.github.markpollack.claude.agent.sdk.config.PermissionMode;
 import io.github.markpollack.claude.agent.sdk.parsing.ParsedMessage;
 import io.github.markpollack.claude.agent.sdk.test.ClaudeCliTestBase;
@@ -43,6 +44,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * These tests verify that MCP configuration is properly passed to the CLI and that the
  * session infrastructure supports MCP servers.
  */
+@Tag("live")
 class McpIntegrationIT extends ClaudeCliTestBase {
 
 	private static final String HAIKU_MODEL = CLIOptions.MODEL_HAIKU;

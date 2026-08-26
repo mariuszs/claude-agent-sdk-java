@@ -19,6 +19,7 @@ package io.github.markpollack.claude.agent.sdk.error;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.Tag;
 import io.github.markpollack.claude.agent.sdk.config.PermissionMode;
 import io.github.markpollack.claude.agent.sdk.exceptions.TransportException;
 import io.github.markpollack.claude.agent.sdk.test.ClaudeCliTestBase;
@@ -51,6 +52,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * </ul>
  */
 @Timeout(value = 120, unit = TimeUnit.SECONDS)
+@Tag("live")
 class ErrorScenarioIntegrationIT extends ClaudeCliTestBase {
 
 	private static final String HAIKU_MODEL = CLIOptions.MODEL_HAIKU;

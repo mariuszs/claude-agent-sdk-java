@@ -20,6 +20,7 @@ import io.github.markpollack.claude.agent.sdk.test.ClaudeCliTestBase;
 import io.github.markpollack.claude.agent.sdk.transport.CLIOptions;
 import io.github.markpollack.claude.agent.sdk.types.QueryResult;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Tag;
 
 import java.time.Duration;
 
@@ -34,6 +35,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * available.
  * </p>
  */
+@Tag("live")
 class QuerySmokeIT extends ClaudeCliTestBase {
 
 	@Test

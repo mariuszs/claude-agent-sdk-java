@@ -18,6 +18,7 @@ package io.github.markpollack.claude.agent.sdk;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Tag;
 import io.github.markpollack.claude.agent.sdk.config.PermissionMode;
 import io.github.markpollack.claude.agent.sdk.parsing.ParsedMessage;
 import io.github.markpollack.claude.agent.sdk.test.ClaudeCliTestBase;
@@ -45,6 +46,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <li>Subagent responses are captured in the conversation</li>
  * </ul>
  */
+@Tag("live")
 class SubagentIT extends ClaudeCliTestBase {
 
 	private static final String HAIKU_MODEL = CLIOptions.MODEL_HAIKU;

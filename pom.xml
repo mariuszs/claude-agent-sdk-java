@@ -83,6 +83,21 @@
         <maven-resources-plugin.version>3.3.1</maven-resources-plugin.version>
         <cyclonedx-maven-plugin.version>2.9.3</cyclonedx-maven-plugin.version>
         <spring-javaformat-maven-plugin.version>0.0.43</spring-javaformat-maven-plugin.version>
+
+        <!--
+            Integration tests tagged "live" drive a real Claude CLI against the Anthropic
+            API: they need ANTHROPIC_API_KEY and they cost money on every run. They are
+            therefore excluded by default so that an ordinary `./mvnw verify` - locally,
+            in CI, and when publishing a snapshot - is deterministic and credential-free.
+
+            The live suite is opt-in, and the Live Integration Tests workflow is the
+            supported way to run it:
+
+                ./mvnw verify -Dfailsafe.excluded.groups=
+
+            See RELEASING.md for when a live run is required for a release candidate.
+        -->
+        <failsafe.excluded.groups>live</failsafe.excluded.groups>
     </properties>
 
     <packaging>pom</packaging>

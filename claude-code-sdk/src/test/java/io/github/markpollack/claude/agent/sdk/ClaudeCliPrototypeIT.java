@@ -18,6 +18,7 @@ package io.github.markpollack.claude.agent.sdk;
 
 import io.github.markpollack.claude.agent.sdk.test.ClaudeCliTestBase;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Tag;
 
 import java.nio.file.Path;
 
@@ -30,6 +31,7 @@ import java.nio.file.Path;
  * available.
  * </p>
  */
+@Tag("live")
 class ClaudeCliPrototypeIT extends ClaudeCliTestBase {
 
 	@Test

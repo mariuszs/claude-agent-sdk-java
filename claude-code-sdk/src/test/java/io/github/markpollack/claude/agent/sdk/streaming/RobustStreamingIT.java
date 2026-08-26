@@ -25,6 +25,7 @@ import io.github.markpollack.claude.agent.sdk.types.ResultMessage;
 import io.github.markpollack.claude.agent.sdk.types.SystemMessage;
 import io.github.markpollack.claude.agent.sdk.types.TextBlock;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Tag;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.zeroturnaround.exec.ProcessExecutor;
@@ -51,6 +52,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <li>Provide comprehensive diagnostics and monitoring</li>
  * </ul>
  */
+@Tag("live")
 class RobustStreamingIT extends ClaudeCliTestBase {
 
 	private static final Logger logger = LoggerFactory.getLogger(RobustStreamingIT.class);

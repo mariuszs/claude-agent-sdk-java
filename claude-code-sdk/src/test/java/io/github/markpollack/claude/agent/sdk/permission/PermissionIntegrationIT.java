@@ -19,6 +19,7 @@ package io.github.markpollack.claude.agent.sdk.permission;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.Tag;
 import io.github.markpollack.claude.agent.sdk.config.PermissionMode;
 import io.github.markpollack.claude.agent.sdk.test.ClaudeCliTestBase;
 import io.github.markpollack.claude.agent.sdk.transport.StreamingTransport;
@@ -59,6 +60,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * </ul>
  */
 @Timeout(value = 180, unit = TimeUnit.SECONDS)
+@Tag("live")
 class PermissionIntegrationIT extends ClaudeCliTestBase {
 
 	// Use Haiku for most tests (fast), Sonnet for tests requiring reliable tool use

@@ -1,0 +1,146 @@
+name: Live Claude Integration Tests
+
+# Runs the paid, credential-requiring Claude integration suite against a real Claude CLI.
+#
+# AUTHORIZATION BOUNDARY
+# ----------------------
+# This is the ONLY workflow in this repository that is given ANTHROPIC_API_KEY, and it is
+# `workflow_dispatch` only. It cannot be triggered by a push, by a pull request, or by a
+# fork: starting it requires a human with write access choosing to start it, which is the
+# owner-visible authorization boundary for spending money on provider calls.
+#
+# Ordinary CI (ci.yml), snapshot publication (publish-snapshot.yml) and the release job
+# (maven-central-release.yml) are all credential-free and never reach this suite: the
+# parent POM excludes the "live" JUnit tag by default. This workflow opts in by clearing
+# failsafe.excluded.groups.
+#
+# The run records the exact candidate SHA, the test census, and the CLI version so that a
+# release can cite it as evidence for that specific commit. See RELEASING.md for when a
+# fresh run is required and when an existing exact-SHA run may be reused.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Exact candidate ref to verify (branch, tag, or full SHA)'
+        required: true
+        default: 'main'
+        type: string
+      reason:
+        description: 'Why this live run is being authorized (release candidate, subprocess/protocol change, ...)'
+        required: true
+        type: string
+
+concurrency:
+  # One paid run at a time. Do NOT cancel in progress: a half-run live suite is not
+  # evidence, and cancelling still costs whatever it already spent.
+  group: live-integration
+  cancel-in-progress: false
+
+jobs:
+  live-integration:
+    name: Live Claude integration suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Record candidate identity
+        id: candidate
+        run: |
+          CANDIDATE_SHA="$(git rev-parse HEAD)"
+          echo "sha=${CANDIDATE_SHA}" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Live Claude integration run"
+            echo
+            echo "| Field | Value |"
+            echo "|---|---|"
+            echo "| Requested ref | \`${{ inputs.ref }}\` |"
+            echo "| Exact candidate SHA | \`${CANDIDATE_SHA}\` |"
+            echo "| Authorized by | @${{ github.actor }} |"
+            echo "| Stated reason | ${{ inputs.reason }} |"
+            echo "| Run | [\`${{ github.run_id }}\`](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Setup agent CLIs
+        uses: markpollack/build-tools/.github/actions/setup-agent-clis@main
+        with:
+          clis: 'claude'
+
+      - name: Record Claude CLI version
+        id: cli
+        run: |
+          CLI_VERSION="$(claude --version 2>&1 | head -1)"
+          echo "version=${CLI_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "| Claude CLI version | \`${CLI_VERSION}\` |" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: maven
+
+      - name: Run full integration suite (live)
+        env:
+          # The single point at which a provider credential enters this repository's CI.
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -z "${ANTHROPIC_API_KEY}" ]; then
+            echo "::error::ANTHROPIC_API_KEY is not available to this run. The live suite cannot produce evidence without it."
+            exit 1
+          fi
+          # Clearing failsafe.excluded.groups opts the "live"-tagged classes back in,
+          # so this runs the ENTIRE integration suite, not a subset.
+          ./mvnw -B clean verify -Dfailsafe.excluded.groups=
+
+      - name: Record test census
+        if: always()
+        run: |
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import glob, xml.etree.ElementTree as ET
+
+          def census(kind):
+              rows, tot = [], [0, 0, 0, 0]
+              for path in sorted(glob.glob(f'**/target/{kind}-reports/TEST-*.xml', recursive=True)):
+                  r = ET.parse(path).getroot()
+                  vals = [int(r.get(k, 0)) for k in ('tests', 'failures', 'errors', 'skipped')]
+                  rows.append((r.get('name', '').split('.')[-1], vals))
+                  tot = [a + b for a, b in zip(tot, vals)]
+              return rows, tot
+
+          print()
+          print('### Test census')
+          for kind, label in (('surefire', 'Deterministic (surefire)'), ('failsafe', 'Integration (failsafe)')):
+              rows, tot = census(kind)
+              print()
+              print(f'**{label}** — {tot[0]} tests, {tot[1]} failures, {tot[2]} errors, {tot[3]} skipped')
+              print()
+              print('| Class | Tests | Failures | Errors | Skipped |')
+              print('|---|---|---|---|---|')
+              for name, v in rows:
+                  print(f'| {name} | {v[0]} | {v[1]} | {v[2]} | {v[3]} |')
+          PY
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-integration-reports-${{ steps.candidate.outputs.sha }}
+          path: |
+            **/target/surefire-reports/
+            **/target/failsafe-reports/
+          retention-days: 90
+
+      - name: Evidence footer
+        if: always()
+        run: |
+          {
+            echo
+            echo "Cite this run as live evidence for SHA \`${{ steps.candidate.outputs.sha }}\` on CLI \`${{ steps.cli.outputs.version }}\`."
+            echo "Evidence is valid for that SHA only — see RELEASING.md."
+          } >> "$GITHUB_STEP_SUMMARY"

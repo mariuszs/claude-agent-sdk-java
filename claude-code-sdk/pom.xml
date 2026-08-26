@@ -179,6 +179,10 @@
                     <includes>
                         <include>**/*IT.java</include>
                     </includes>
+                    <!-- Excludes the paid, credential-requiring "live" suite by default.
+                         Override with -Dfailsafe.excluded.groups= to run it. See the
+                         property definition in the parent POM and RELEASING.md. -->
+                    <excludedGroups>${failsafe.excluded.groups}</excludedGroups>
                 </configuration>
             </plugin>
         </plugins>
