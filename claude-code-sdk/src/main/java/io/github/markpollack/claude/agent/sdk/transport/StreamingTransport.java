@@ -1147,14 +1147,15 @@ public class StreamingTransport implements AutoCloseable {
 
 			return Mono.empty();
 		})).then(Mono.defer(() -> {
-			// Close transport resources
-			closeStreams();
-
-			// Terminate process tree gracefully
+			// Same ordering as close(): terminate the process tree before closing the
+			// streams, so the bounded destroy is reachable rather than sitting behind
+			// an unbounded reader close.
 			if (process != null) {
 				destroyProcessTree(process);
-				return Mono.empty();
 			}
+
+			// Close transport resources
+			closeStreams();
 			return Mono.empty();
 		})).then(Mono.<Void>fromRunnable(() -> {
 			// Dispose schedulers
@@ -1187,13 +1188,22 @@ public class StreamingTransport implements AutoCloseable {
 		// Dispose subscriptions
 		subscriptions.dispose();
 
-		// Close streams
-		closeStreams();
-
-		// Terminate process tree — child processes may hold pipes open
+		// Terminate the process tree FIRST, then close the streams.
+		//
+		// The order matters and used to be the other way round. destroyProcessTree is
+		// bounded — descendants first, destroy, waitFor(5s), destroyForcibly,
+		// waitFor(2s) — but closing a pipe reader while another thread is blocked
+		// reading it is not bounded at all, so running closeStreams() first meant the
+		// bound never got the chance to apply: an observed close took over three
+		// minutes, and a cancelled session left the CLI alive through a 45s settle and
+		// the following turn. Destroying first gives the blocked reader its EOF, so the
+		// stream closes immediately afterwards.
 		if (process != null) {
 			destroyProcessTree(process);
 		}
+
+		// Close streams
+		closeStreams();
 
 		// Clean up MCP config temp file
 		if (mcpConfigFile != null) {
