@@ -38,8 +38,8 @@ ARTIFACT_ID="claude-code-sdk"
 # Required floors. Both are consumer-visible: Jackson 2 is declared directly by the SDK,
 # Jackson 3 arrives through mcp -> mcp-json-jackson3 and is declared directly so the
 # floor travels in the flattened POM.
-JACKSON2_FLOOR="2.21.6"
-JACKSON3_FLOOR="3.1.6"
+JACKSON2_FLOOR="2.22.3"
+JACKSON3_FLOOR="3.2.3"
 
 # Expected Java shape: class-file major 65 == Java 21.
 EXPECTED_CLASSFILE_MAJOR="65"
