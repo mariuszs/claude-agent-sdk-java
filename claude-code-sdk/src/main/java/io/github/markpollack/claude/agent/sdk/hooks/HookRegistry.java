@@ -276,6 +276,12 @@ public class HookRegistry {
 	 * field must be absent rather than null: the CLI rejects {@code "continue": null} and
 	 * then ignores the whole output, deny included.
 	 * </p>
+	 *
+	 * <p>
+	 * The CLI also rejects a {@code hookSpecificOutput} whose {@code hookEventName} is
+	 * not the event it asked for, so a missing name is filled in from the registration. A
+	 * name that differs is the hook's mistake: it is logged and sent as is.
+	 * </p>
 	 * @param requestId the control request ID to answer
 	 * @param hookId the hook ID the CLI asked for
 	 * @param input the hook input
@@ -283,11 +289,34 @@ public class HookRegistry {
 	 * hook is registered under {@code hookId}
 	 */
 	public ControlResponse handleCallback(String requestId, String hookId, HookInput input) {
-		HookOutput output = executeHook(hookId, input);
+		HookRegistration registration = hooksById.get(hookId);
+		HookOutput output = registration != null ? executeHook(hookId, input) : null;
 		if (output == null) {
 			return ControlResponse.error(requestId, "No hook registered for callback ID: " + hookId);
 		}
-		return ControlResponse.success(requestId, output);
+		return ControlResponse.success(requestId, withEventName(output, registration));
+	}
+
+	private static HookOutput withEventName(HookOutput output, HookRegistration registration) {
+		HookOutput.HookSpecificOutput specific = output.hookSpecificOutput();
+		if (specific == null) {
+			return output;
+		}
+		String expected = registration.event().getProtocolName();
+		if (specific.hookEventName() == null) {
+			HookOutput.HookSpecificOutput named = new HookOutput.HookSpecificOutput(expected,
+					specific.permissionDecision(), specific.permissionDecisionReason(), specific.updatedInput(),
+					specific.additionalContext());
+			return new HookOutput(output.continueExecution(), output.suppressOutput(), output.stopReason(),
+					output.decision(), output.systemMessage(), output.reason(), output.asyncExecution(),
+					output.asyncTimeout(), named);
+		}
+		if (!expected.equals(specific.hookEventName())) {
+			logger.warn(
+					"Hook {} is registered for {} but returned hookSpecificOutput for {}; the CLI will ignore its whole output",
+					registration.id(), expected, specific.hookEventName());
+		}
+		return output;
 	}
 
 	/**

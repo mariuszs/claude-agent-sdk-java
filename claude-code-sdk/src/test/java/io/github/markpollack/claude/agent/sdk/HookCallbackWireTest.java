@@ -29,6 +29,7 @@ import java.util.function.Predicate;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.github.markpollack.claude.agent.sdk.exceptions.TransportException;
 import io.github.markpollack.claude.agent.sdk.hooks.HookRegistry;
 import io.github.markpollack.claude.agent.sdk.types.control.HookOutput;
 import io.github.markpollack.claude.agent.sdk.types.control.HookOutput.HookSpecificOutput;
@@ -42,6 +43,7 @@ import org.junit.jupiter.api.io.TempDir;
 import reactor.core.Disposable;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Drives each client through hook registration and one {@code hook_callback} round trip
@@ -66,6 +68,12 @@ class HookCallbackWireTest {
 	private static final String HOOK_REQUEST_ID = "hook-req-1";
 
 	private static final String DENY_REASON = "branch changes are blocked";
+
+	private static final String INITIALIZE_SUCCESS = """
+			{"type":"control_response","response":{"subtype":"success","request_id":"%s","response":{}}}""";
+
+	private static final String INITIALIZE_REFUSED = """
+			{"type":"control_response","response":{"subtype":"error","request_id":"%s","error":"hooks rejected"}}""";
 
 	@TempDir
 	Path tempDir;
@@ -174,6 +182,25 @@ class HookCallbackWireTest {
 			}
 		}
 
+		@Test
+		@DisplayName("a refused initialize fails the connect")
+		void initializeRefused() throws Exception {
+			ClaudeAsyncClient client = ClaudeClient.async()
+				.workingDirectory(tempDir)
+				.claudePath(writeStubCli(INITIALIZE_REFUSED))
+				.hookRegistry(hooks)
+				.timeout(ARRIVAL_TIMEOUT)
+				.build();
+			try {
+				assertThatThrownBy(() -> client.connect().block(ARRIVAL_TIMEOUT)).isInstanceOf(TransportException.class)
+					.rootCause()
+					.hasMessageContaining("hooks rejected");
+			}
+			finally {
+				client.close().block(ARRIVAL_TIMEOUT);
+			}
+		}
+
 	}
 
 	private void assertDenyResponse(JsonNode response) throws IOException {
@@ -236,6 +263,14 @@ class HookCallbackWireTest {
 	 * callback once a user message arrives. It contacts nothing.
 	 */
 	private String writeStubCli() throws IOException {
+		return writeStubCli(INITIALIZE_SUCCESS);
+	}
+
+	/**
+	 * Writes the stub CLI, answering {@code initialize} with {@code initializeReply}, a
+	 * printf format whose {@code %s} is the request ID.
+	 */
+	private String writeStubCli(String initializeReply) throws IOException {
 		Path stub = tempDir.resolve("claude-stub.sh");
 		String hookCallback = """
 				{"type":"control_request","request_id":"%s","request":{"subtype":"hook_callback",\
@@ -250,15 +285,14 @@ class HookCallbackWireTest {
 				    case "$line" in
 				        *'"subtype":"initialize"'*)
 				            id=$(printf '%%s\\n' "$line" | sed -n 's/.*"request_id":"\\([^"]*\\)".*/\\1/p')
-				            printf '{"type":"control_response","response":{"subtype":"success","request_id":"%%s","response":{}}}\\n' "$id"
+				            printf '%s\\n' "$id"
 				            ;;
 				        *'"type":"user"'*)
 				            printf '%%s\\n' '%s'
 				            ;;
 				    esac
 				done
-				"""
-			.formatted(recording.toAbsolutePath(), hookCallback);
+				""".formatted(recording.toAbsolutePath(), initializeReply, hookCallback);
 		Files.writeString(stub, script, StandardCharsets.UTF_8);
 		Files.setPosixFilePermissions(stub, PosixFilePermissions.fromString("rwxr-xr-x"));
 		return stub.toAbsolutePath().toString();

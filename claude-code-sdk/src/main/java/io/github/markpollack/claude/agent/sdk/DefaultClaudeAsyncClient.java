@@ -287,7 +287,10 @@ public class DefaultClaudeAsyncClient implements ClaudeAsyncClient {
 		request.put("hooks", hookConfig);
 
 		logger.debug("Sending initialize with {} hook event types", hookConfig.size());
-		sendControlRequest(request);
+		// Awaited, as in the sync client: the prompt follows right after, and the CLI
+		// must have registered the hooks before it starts the turn. A refusal fails the
+		// connect instead of leaving the hooks silently inactive.
+		sendControlRequest(request).block();
 		logger.info("Hook configuration sent to CLI: {} event types", hookConfig.size());
 	}
 
@@ -765,40 +768,45 @@ public class DefaultClaudeAsyncClient implements ClaudeAsyncClient {
 		}
 	}
 
-	private void sendControlRequest(Map<String, Object> request) throws ClaudeSDKException {
+	/**
+	 * Sends a control request and returns the CLI's reply.
+	 *
+	 * <p>
+	 * The reply is registered before the request is sent, so it is matched rather than
+	 * reported as an unknown response, and a refusal is logged even when the caller does
+	 * not wait for it. A caller that waits gets the reply, or the refusal as a
+	 * {@link ClaudeSDKException}, within the client timeout.
+	 * </p>
+	 * @throws TransportException if the request cannot be written to the CLI
+	 */
+	private Mono<Map<String, Object>> sendControlRequest(Map<String, Object> request) throws ClaudeSDKException {
+		String requestId = sessionPrefix + "_" + requestCounter.incrementAndGet();
+
+		// The CLI only reads the control_request envelope with the payload nested
+		// under "request", as the sync client sends it; any other shape is dropped
+		// without a reply.
+		Map<String, Object> fullRequest = new LinkedHashMap<>();
+		fullRequest.put("type", "control_request");
+		fullRequest.put("request_id", requestId);
+		fullRequest.put("request", request);
+
+		Mono<Map<String, Object>> reply = Mono
+			.<Map<String, Object>>create(sink -> pendingResponses.put(requestId, sink))
+			.doOnError(e -> logger.warn("Control request {} ({}) failed: {}", requestId, request.get("subtype"),
+					e.getMessage()))
+			.cache();
+		reply.onErrorComplete().subscribe();
+
 		try {
-			String requestId = sessionPrefix + "_" + requestCounter.incrementAndGet();
-
-			// The CLI only reads the control_request envelope with the payload nested
-			// under "request", as the sync client sends it; any other shape is dropped
-			// without a reply.
-			Map<String, Object> fullRequest = new LinkedHashMap<>();
-			fullRequest.put("type", "control_request");
-			fullRequest.put("request_id", requestId);
-			fullRequest.put("request", request);
-
-			// Not awaited, but registered, so the CLI's reply is matched rather than
-			// reported as an unknown response, and a refusal is logged.
-			Mono.<Map<String, Object>>create(sink -> pendingResponses.put(requestId, sink))
-				.doOnError(e -> logger.warn("Control request {} ({}) failed: {}", requestId, request.get("subtype"),
-						e.getMessage()))
-				.onErrorComplete()
-				.subscribe();
-
-			String json = objectMapper.writeValueAsString(fullRequest);
-			try {
-				transportRef.get().sendMessage(json);
-			}
-			catch (Exception e) {
-				pendingResponses.remove(requestId);
-				throw e;
-			}
-
-			logger.debug("Sent control request: id={}, subtype={}", requestId, request.get("subtype"));
+			transportRef.get().sendMessage(objectMapper.writeValueAsString(fullRequest));
 		}
 		catch (Exception e) {
+			pendingResponses.remove(requestId);
 			throw new TransportException("Failed to send control request", e);
 		}
+
+		logger.debug("Sent control request: id={}, subtype={}", requestId, request.get("subtype"));
+		return reply.timeout(timeout).doOnError(e -> pendingResponses.remove(requestId));
 	}
 
 	private void cleanup() {

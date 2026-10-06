@@ -495,6 +495,39 @@ class HookRegistryTest {
 		}
 
 		@Test
+		@DisplayName("A missing hookEventName is filled in from the registration")
+		void missingEventName() throws Exception {
+			String id = registry.registerPreToolUse("Bash",
+					input -> HookOutput.builder()
+						.hookSpecificOutput(HookOutput.HookSpecificOutput.builder()
+							.permissionDecision("deny")
+							.permissionDecisionReason("branch changes are blocked")
+							.build())
+						.build());
+
+			JsonNode wire = wire(registry.handleCallback("req_8", id, preToolUseInput));
+
+			assertThat(wire.at("/response/response")).isEqualTo(mapper.readTree("""
+					{"hookSpecificOutput": {
+					  "hookEventName": "PreToolUse",
+					  "permissionDecision": "deny",
+					  "permissionDecisionReason": "branch changes are blocked"}}
+					"""));
+		}
+
+		@Test
+		@DisplayName("A hookEventName for another event is sent as the hook returned it")
+		void mismatchedEventName() throws Exception {
+			String id = registry.registerPostToolUse(input -> HookOutput.builder()
+				.hookSpecificOutput(HookOutput.HookSpecificOutput.preToolUseDeny("wrong event"))
+				.build());
+
+			JsonNode wire = wire(registry.handleCallback("req_9", id, preToolUseInput));
+
+			assertThat(wire.at("/response/response/hookSpecificOutput/hookEventName").asText()).isEqualTo("PreToolUse");
+		}
+
+		@Test
 		@DisplayName("An unknown callback ID is answered with an error")
 		void unknownCallback() throws Exception {
 			JsonNode wire = wire(registry.handleCallback("req_7", "hook_missing", preToolUseInput));
