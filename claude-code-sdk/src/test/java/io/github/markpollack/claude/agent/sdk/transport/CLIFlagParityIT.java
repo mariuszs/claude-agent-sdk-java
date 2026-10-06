@@ -74,6 +74,15 @@ import static org.assertj.core.api.Assertions.assertThat;
  * reported as a warning for deliberate triage, and every flag remains reachable today
  * through {@code CLIOptions.extraArgs} regardless.
  * </p>
+ *
+ * <p>
+ * <strong>{@link #sdkPermissionModesShouldBeAcceptedByCli()} is a gate too</strong>, for
+ * the same reason: it asks the CLI whether it accepts each {@code --permission-mode}
+ * value the SDK sends, by validating it alongside {@code --version}. It deliberately does
+ * not compare against the choices {@code --help} lists, because the CLI accepts values it
+ * no longer lists ({@code default} since 2.1.291). Choices with no SDK constant are only
+ * reported, by {@link #cliPermissionModeChoicesShouldHaveSdkConstants()}.
+ * </p>
  */
 @DisplayName("CLI Flag Parity IT")
 class CLIFlagParityIT extends ClaudeCliTestBase {
@@ -81,6 +90,8 @@ class CLIFlagParityIT extends ClaudeCliTestBase {
 	private static Set<String> cliFlags;
 
 	private static String cliHelpOutput;
+
+	private static Set<String> permissionModeChoices;
 
 	/**
 	 * Flags the SDK has <strong>permanently declined</strong> to model as builder methods,
@@ -183,15 +194,6 @@ class CLIFlagParityIT extends ClaudeCliTestBase {
 	}
 
 	/**
-	 * {@link PermissionMode} values the CLI accepts but no longer lists among the
-	 * {@code --permission-mode} choices, each with what was observed.
-	 */
-	private static final java.util.Map<PermissionMode, String> UNLISTED_PERMISSION_MODES = java.util.Map.of(
-			PermissionMode.DEFAULT,
-			"Dropped from the --help choices in favour of 'manual' by CLI 2.1.291, which still accepts "
-					+ "'--permission-mode default' and reports 'manual' sessions as 'default'.");
-
-	/**
 	 * Mapping from CLI flag names to CLIOptions builder method names. Only needed when
 	 * names don't match directly.
 	 */
@@ -231,6 +233,7 @@ class CLIFlagParityIT extends ClaudeCliTestBase {
 		assertThat(exitCode).as("claude --help should succeed").isZero();
 
 		cliFlags = parseFlags(cliHelpOutput);
+		permissionModeChoices = parsePermissionModeChoices(cliHelpOutput);
 	}
 
 	/**
@@ -361,22 +364,33 @@ class CLIFlagParityIT extends ClaudeCliTestBase {
 	}
 
 	/**
-	 * <strong>A gate, like {@link #criticalSdkFlagsShouldBeInCli()}.</strong> Every
-	 * {@link PermissionMode} the SDK passes as {@code --permission-mode <value>} must be
-	 * a choice the CLI lists, unless it is recorded in
-	 * {@link #UNLISTED_PERMISSION_MODES}. A value the CLI rejects fails every session
-	 * started with it.
+	 * <strong>A gate, like {@link #criticalSdkFlagsShouldBeInCli()}.</strong> The CLI
+	 * must accept every {@code --permission-mode} value the SDK can send, including
+	 * {@link PermissionMode#DEFAULT}, which {@code --help} no longer lists. A value the
+	 * CLI rejects fails every session started with it.
+	 *
+	 * <p>
+	 * The CLI validates the value while parsing arguments, before acting on
+	 * {@code --version}, so no session is started and no credentials are needed.
+	 * </p>
 	 */
 	@Test
-	@DisplayName("SDK permission modes are CLI --permission-mode choices")
-	void sdkPermissionModesShouldBeCliChoices() {
-		Set<String> choices = permissionModeChoices();
-
+	@DisplayName("CLI accepts every SDK --permission-mode value")
+	void sdkPermissionModesShouldBeAcceptedByCli() throws Exception {
 		for (PermissionMode mode : PermissionMode.values()) {
-			if (mode == PermissionMode.DANGEROUSLY_SKIP_PERMISSIONS || UNLISTED_PERMISSION_MODES.containsKey(mode)) {
-				continue; // a separate flag, or accepted though not listed
+			if (!mode.isPermissionModeValue()) {
+				continue;
 			}
-			assertThat(choices).as("CLI should accept --permission-mode " + mode.getValue()).contains(mode.getValue());
+			ProcessBuilder pb = new ProcessBuilder("claude", "--permission-mode", mode.getValue(), "--version");
+			pb.redirectErrorStream(true);
+			Process process = pb.start();
+			String output;
+			try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
+				output = reader.lines().collect(Collectors.joining("\n"));
+			}
+			assertThat(process.waitFor())
+				.as("CLI should accept --permission-mode " + mode.getValue() + ", but printed: " + output)
+				.isZero();
 		}
 	}
 
@@ -395,7 +409,7 @@ class CLIFlagParityIT extends ClaudeCliTestBase {
 		Set<String> modelled = java.util.Arrays.stream(PermissionMode.values())
 			.map(PermissionMode::getValue)
 			.collect(Collectors.toSet());
-		Set<String> missing = new java.util.TreeSet<>(permissionModeChoices());
+		Set<String> missing = new java.util.TreeSet<>(permissionModeChoices);
 		missing.removeAll(modelled);
 
 		if (!missing.isEmpty()) {
@@ -409,18 +423,22 @@ class CLIFlagParityIT extends ClaudeCliTestBase {
 	@Test
 	@DisplayName("CLI help lists --permission-mode choices")
 	void permissionModeChoicesShouldBeParseable() {
-		assertThat(permissionModeChoices()).contains("acceptEdits", "bypassPermissions");
+		assertThat(permissionModeChoices).as("--permission-mode should list its choices in claude --help")
+			.contains("acceptEdits", "bypassPermissions");
 	}
 
 	/**
 	 * The {@code (choices: ...)} list of {@code --permission-mode} in {@code --help},
-	 * which wraps across lines.
+	 * which wraps across lines. The search stops at the next option, so it never reads
+	 * another option's choices; empty if the list is missing.
 	 */
-	private static Set<String> permissionModeChoices() {
-		Matcher option = Pattern.compile("--permission-mode\\s+<[^>]+>[^(]*\\(choices:([^)]*)\\)")
-			.matcher(cliHelpOutput);
-		assertThat(option.find()).as("--permission-mode should list its choices in claude --help").isTrue();
+	private static Set<String> parsePermissionModeChoices(String helpOutput) {
+		Matcher option = Pattern.compile("--permission-mode\\s+<[^>]+>(?:(?!\\n\\s*-)[\\s\\S])*?\\(choices:([^)]*)\\)")
+			.matcher(helpOutput);
 		Set<String> choices = new HashSet<>();
+		if (!option.find()) {
+			return choices;
+		}
 		Matcher quoted = Pattern.compile("\"([^\"]+)\"").matcher(option.group(1));
 		while (quoted.find()) {
 			choices.add(quoted.group(1));

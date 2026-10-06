@@ -21,9 +21,9 @@ package io.github.markpollack.claude.agent.sdk.config;
  * SDK.
  *
  * <p>
- * Every constant except {@link #DANGEROUSLY_SKIP_PERMISSIONS} is passed to the CLI as
- * {@code --permission-mode <value>}. {@code CLIFlagParityIT} checks them against the
- * choices {@code claude --help} lists.
+ * Every constant for which {@link #isPermissionModeValue()} holds is passed to the CLI as
+ * {@code --permission-mode <value>}. {@code CLIFlagParityIT} checks that the CLI accepts
+ * each of them.
  * </p>
  */
 public enum PermissionMode {
@@ -91,6 +91,14 @@ public enum PermissionMode {
 
 	public String getValue() {
 		return value;
+	}
+
+	/**
+	 * Whether this mode is passed as {@code --permission-mode <value>}. Only
+	 * {@link #DANGEROUSLY_SKIP_PERMISSIONS} is not: it is a flag of its own.
+	 */
+	public boolean isPermissionModeValue() {
+		return this != DANGEROUSLY_SKIP_PERMISSIONS;
 	}
 
 	/**
