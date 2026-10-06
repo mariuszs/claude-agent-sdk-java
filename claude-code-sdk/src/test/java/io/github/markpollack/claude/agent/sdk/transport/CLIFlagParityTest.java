@@ -20,6 +20,8 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 import io.github.markpollack.claude.agent.sdk.config.PermissionMode;
 import io.github.markpollack.claude.agent.sdk.config.PluginConfig;
 import io.github.markpollack.claude.agent.sdk.mcp.McpServerConfig;
@@ -218,6 +220,20 @@ class CLIFlagParityTest {
 				CLIOptions options = CLIOptions.builder().permissionMode(PermissionMode.BYPASS_PERMISSIONS).build();
 				List<String> cmd = transport.buildStreamingCommand(options);
 				assertThat(cmd).containsSubsequence("--permission-mode", "bypassPermissions");
+			}
+		}
+
+		@ParameterizedTest(name = "--permission-mode {0}")
+		@EnumSource(value = PermissionMode.class, names = "DANGEROUSLY_SKIP_PERMISSIONS",
+				mode = EnumSource.Mode.EXCLUDE)
+		@DisplayName("every --permission-mode value is emitted once, as the CLI spells it")
+		void permissionModeValues(PermissionMode mode) {
+			try (StreamingTransport transport = createTransport()) {
+				CLIOptions options = CLIOptions.builder().permissionMode(mode).build();
+				List<String> cmd = transport.buildStreamingCommand(options);
+				assertThat(cmd).containsSubsequence("--permission-mode", mode.getValue());
+				assertThat(cmd.stream().filter("--permission-mode"::equals)).hasSize(1);
+				assertThat(PermissionMode.fromValue(mode.getValue())).isSameAs(mode);
 			}
 		}
 

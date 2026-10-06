@@ -19,6 +19,7 @@ package io.github.markpollack.claude.agent.sdk.transport;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import io.github.markpollack.claude.agent.sdk.config.PermissionMode;
 import io.github.markpollack.claude.agent.sdk.test.ClaudeCliTestBase;
 
 import java.io.BufferedReader;
@@ -180,6 +181,15 @@ class CLIFlagParityIT extends ClaudeCliTestBase {
 		all.addAll(DECLINED_FLAGS.keySet());
 		return all;
 	}
+
+	/**
+	 * {@link PermissionMode} values the CLI accepts but no longer lists among the
+	 * {@code --permission-mode} choices, each with what was observed.
+	 */
+	private static final java.util.Map<PermissionMode, String> UNLISTED_PERMISSION_MODES = java.util.Map.of(
+			PermissionMode.DEFAULT,
+			"Dropped from the --help choices in favour of 'manual' by CLI 2.1.291, which still accepts "
+					+ "'--permission-mode default' and reports 'manual' sessions as 'default'.");
 
 	/**
 	 * Mapping from CLI flag names to CLIOptions builder method names. Only needed when
@@ -348,6 +358,74 @@ class CLIFlagParityIT extends ClaudeCliTestBase {
 		for (String flag : criticalFlags) {
 			assertThat(cliFlags).as("CLI should support flag: " + flag).contains(flag);
 		}
+	}
+
+	/**
+	 * <strong>A gate, like {@link #criticalSdkFlagsShouldBeInCli()}.</strong> Every
+	 * {@link PermissionMode} the SDK passes as {@code --permission-mode <value>} must be
+	 * a choice the CLI lists, unless it is recorded in
+	 * {@link #UNLISTED_PERMISSION_MODES}. A value the CLI rejects fails every session
+	 * started with it.
+	 */
+	@Test
+	@DisplayName("SDK permission modes are CLI --permission-mode choices")
+	void sdkPermissionModesShouldBeCliChoices() {
+		Set<String> choices = permissionModeChoices();
+
+		for (PermissionMode mode : PermissionMode.values()) {
+			if (mode == PermissionMode.DANGEROUSLY_SKIP_PERMISSIONS || UNLISTED_PERMISSION_MODES.containsKey(mode)) {
+				continue; // a separate flag, or accepted though not listed
+			}
+			assertThat(choices).as("CLI should accept --permission-mode " + mode.getValue()).contains(mode.getValue());
+		}
+	}
+
+	/**
+	 * Reports {@code --permission-mode} choices with no {@link PermissionMode} constant.
+	 *
+	 * <p>
+	 * A warning, not a gate, for the reason given in the class javadoc. Such a mode is
+	 * still reachable: {@code CLIOptions.extraArgs} is emitted after the SDK's own
+	 * {@code --permission-mode}, and the CLI keeps the last one.
+	 * </p>
+	 */
+	@Test
+	@DisplayName("CLI --permission-mode choices without an SDK constant are reported (warning, not a gate)")
+	void cliPermissionModeChoicesShouldHaveSdkConstants() {
+		Set<String> modelled = java.util.Arrays.stream(PermissionMode.values())
+			.map(PermissionMode::getValue)
+			.collect(Collectors.toSet());
+		Set<String> missing = new java.util.TreeSet<>(permissionModeChoices());
+		missing.removeAll(modelled);
+
+		if (!missing.isEmpty()) {
+			System.out.println("=== WARNING: --permission-mode choices with no PermissionMode constant ===");
+			missing.forEach(choice -> System.out.println("  " + choice));
+			System.out.println("These are reachable today via CLIOptions.extraArgs (\"permission-mode\"), which "
+					+ "the CLI applies over the SDK's own --permission-mode. Add a PermissionMode constant.");
+		}
+	}
+
+	@Test
+	@DisplayName("CLI help lists --permission-mode choices")
+	void permissionModeChoicesShouldBeParseable() {
+		assertThat(permissionModeChoices()).contains("acceptEdits", "bypassPermissions");
+	}
+
+	/**
+	 * The {@code (choices: ...)} list of {@code --permission-mode} in {@code --help},
+	 * which wraps across lines.
+	 */
+	private static Set<String> permissionModeChoices() {
+		Matcher option = Pattern.compile("--permission-mode\\s+<[^>]+>[^(]*\\(choices:([^)]*)\\)")
+			.matcher(cliHelpOutput);
+		assertThat(option.find()).as("--permission-mode should list its choices in claude --help").isTrue();
+		Set<String> choices = new HashSet<>();
+		Matcher quoted = Pattern.compile("\"([^\"]+)\"").matcher(option.group(1));
+		while (quoted.find()) {
+			choices.add(quoted.group(1));
+		}
+		return choices;
 	}
 
 	@Test
