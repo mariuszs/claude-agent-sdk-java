@@ -19,6 +19,7 @@ package io.github.markpollack.claude.agent.sdk.hooks;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import io.github.markpollack.claude.agent.sdk.types.control.ControlRequest;
+import io.github.markpollack.claude.agent.sdk.types.control.ControlResponse;
 import io.github.markpollack.claude.agent.sdk.types.control.HookEvent;
 import io.github.markpollack.claude.agent.sdk.types.control.HookInput;
 import io.github.markpollack.claude.agent.sdk.types.control.HookOutput;
@@ -259,6 +260,34 @@ public class HookRegistry {
 			// Return a safe default on error
 			return HookOutput.block("Hook execution failed: " + e.getMessage());
 		}
+	}
+
+	/**
+	 * Executes the hook a {@code hook_callback} control request names and wraps its
+	 * output in the control response the CLI expects.
+	 *
+	 * <p>
+	 * The CLI validates the response against the hook JSON output format, the same one a
+	 * command hook prints: {@code continue}, {@code decision}, {@code reason} and the
+	 * other control fields at the top level, and {@code hookSpecificOutput} nested with
+	 * camelCase keys ({@code hookEventName}, {@code permissionDecision},
+	 * {@code updatedInput}, {@code additionalContext}). {@link HookOutput} already
+	 * serializes to exactly that and omits unset fields, so it is sent as is. An unset
+	 * field must be absent rather than null: the CLI rejects {@code "continue": null} and
+	 * then ignores the whole output, deny included.
+	 * </p>
+	 * @param requestId the control request ID to answer
+	 * @param hookId the hook ID the CLI asked for
+	 * @param input the hook input
+	 * @return a success response carrying the hook output, or an error response if no
+	 * hook is registered under {@code hookId}
+	 */
+	public ControlResponse handleCallback(String requestId, String hookId, HookInput input) {
+		HookOutput output = executeHook(hookId, input);
+		if (output == null) {
+			return ControlResponse.error(requestId, "No hook registered for callback ID: " + hookId);
+		}
+		return ControlResponse.success(requestId, output);
 	}
 
 	/**
