@@ -41,7 +41,6 @@ import io.github.markpollack.claude.agent.sdk.permission.ToolPermissionContext;
 
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
-import reactor.core.publisher.MonoSink;
 import reactor.core.publisher.Sinks;
 import reactor.core.scheduler.Schedulers;
 
@@ -150,12 +149,12 @@ public class DefaultClaudeAsyncClient implements ClaudeAsyncClient {
 	 */
 	private volatile Sinks.Many<ParsedMessage> rawMessageSink;
 
-	// Control request handling (MCP SDK pattern using MonoSink for correlation)
+	// Control request handling (one Sinks.One per request, matched by request_id)
 	private final AtomicInteger requestCounter = new AtomicInteger(0);
 
 	private final String sessionPrefix = UUID.randomUUID().toString().substring(0, 8);
 
-	private final ConcurrentHashMap<String, MonoSink<Map<String, Object>>> pendingResponses = new ConcurrentHashMap<>();
+	private final ConcurrentHashMap<String, Sinks.One<Map<String, Object>>> pendingResponses = new ConcurrentHashMap<>();
 
 	// Cross-turn message handlers (thread-safe for concurrent registration)
 	private final List<Consumer<Message>> messageHandlers = new CopyOnWriteArrayList<>();
@@ -665,11 +664,8 @@ public class DefaultClaudeAsyncClient implements ClaudeAsyncClient {
 
 	private ControlResponse handleHookCallback(String requestId, ControlRequest.HookCallbackRequest hookCallback) {
 		try {
-			String callbackId = hookCallback.callbackId();
-			Map<String, Object> inputMap = hookCallback.input();
-
-			HookInput input = objectMapper.convertValue(inputMap, HookInput.class);
-			return hookRegistry.handleCallback(requestId, callbackId, input);
+			HookInput input = objectMapper.convertValue(hookCallback.input(), HookInput.class);
+			return hookRegistry.handleCallback(requestId, hookCallback.callbackId(), input);
 		}
 		catch (Exception e) {
 			logger.error("Hook callback failed", e);
@@ -741,7 +737,7 @@ public class DefaultClaudeAsyncClient implements ClaudeAsyncClient {
 
 		logger.debug("Handling control response: requestId={}, subtype={}", requestId, response.response().subtype());
 
-		MonoSink<Map<String, Object>> sink = pendingResponses.remove(requestId);
+		Sinks.One<Map<String, Object>> sink = pendingResponses.remove(requestId);
 		if (sink == null) {
 			logger.warn("Unexpected response for unknown request id {}", requestId);
 			return;
@@ -756,15 +752,16 @@ public class DefaultClaudeAsyncClient implements ClaudeAsyncClient {
 				Map<String, Object> typedMap = (Map<String, Object>) responseMap;
 				payload.putAll(typedMap);
 			}
-			sink.success(payload);
+			sink.tryEmitValue(payload);
 			logger.debug("Control response delivered for requestId={}", requestId);
 		}
 		else if (response.response() instanceof ControlResponse.ErrorPayload error) {
-			sink.error(new ClaudeSDKException("Control request failed: " + error.error()));
-			logger.debug("Control response error delivered for requestId={}", requestId);
+			// Logged here, so a refusal shows even when nobody waits for the reply
+			logger.warn("Control request {} failed: {}", requestId, error.error());
+			sink.tryEmitError(new ClaudeSDKException("Control request failed: " + error.error()));
 		}
 		else {
-			sink.success(payload);
+			sink.tryEmitValue(payload);
 		}
 	}
 
@@ -773,9 +770,9 @@ public class DefaultClaudeAsyncClient implements ClaudeAsyncClient {
 	 *
 	 * <p>
 	 * The reply is registered before the request is sent, so it is matched rather than
-	 * reported as an unknown response, and a refusal is logged even when the caller does
-	 * not wait for it. A caller that waits gets the reply, or the refusal as a
-	 * {@link ClaudeSDKException}, within the client timeout.
+	 * reported as an unknown response, whether or not the caller waits for it. A caller
+	 * that waits gets the reply, or the refusal as a {@link ClaudeSDKException}, within
+	 * the client timeout.
 	 * </p>
 	 * @throws TransportException if the request cannot be written to the CLI
 	 */
@@ -790,12 +787,8 @@ public class DefaultClaudeAsyncClient implements ClaudeAsyncClient {
 		fullRequest.put("request_id", requestId);
 		fullRequest.put("request", request);
 
-		Mono<Map<String, Object>> reply = Mono
-			.<Map<String, Object>>create(sink -> pendingResponses.put(requestId, sink))
-			.doOnError(e -> logger.warn("Control request {} ({}) failed: {}", requestId, request.get("subtype"),
-					e.getMessage()))
-			.cache();
-		reply.onErrorComplete().subscribe();
+		Sinks.One<Map<String, Object>> reply = Sinks.one();
+		pendingResponses.put(requestId, reply);
 
 		try {
 			transportRef.get().sendMessage(objectMapper.writeValueAsString(fullRequest));
@@ -806,7 +799,7 @@ public class DefaultClaudeAsyncClient implements ClaudeAsyncClient {
 		}
 
 		logger.debug("Sent control request: id={}, subtype={}", requestId, request.get("subtype"));
-		return reply.timeout(timeout).doOnError(e -> pendingResponses.remove(requestId));
+		return reply.asMono().timeout(timeout).doOnError(e -> pendingResponses.remove(requestId));
 	}
 
 	private void cleanup() {
@@ -832,6 +825,9 @@ public class DefaultClaudeAsyncClient implements ClaudeAsyncClient {
 			rawMessageSink = null;
 		}
 
+		// Fail pending requests now, so a connect awaiting initialize is released
+		// instead of waiting out the timeout
+		pendingResponses.values().forEach(sink -> sink.tryEmitError(new TransportException("Client closed")));
 		pendingResponses.clear();
 	}
 

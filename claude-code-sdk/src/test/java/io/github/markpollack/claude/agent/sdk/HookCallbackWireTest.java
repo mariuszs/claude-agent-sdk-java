@@ -88,7 +88,7 @@ class HookCallbackWireTest {
 	void setUp() throws IOException {
 		this.recording = tempDir.resolve("cli-stdin.jsonl");
 		Files.createFile(recording);
-		this.stubCli = writeStubCli();
+		this.stubCli = writeStubCli(INITIALIZE_SUCCESS);
 		this.hooks = new HookRegistry();
 		hooks.registerPreToolUse("Bash",
 				input -> HookOutput.builder()
@@ -101,7 +101,7 @@ class HookCallbackWireTest {
 	class Sync {
 
 		@Test
-		@DisplayName("a PreToolUse deny is answered in the hook JSON output format")
+		@DisplayName("registers hooks with a control_request initialize and answers a PreToolUse deny in the hook JSON output format")
 		void preToolUseDeny() throws Exception {
 			try (ClaudeSyncClient client = ClaudeClient.sync()
 				.workingDirectory(tempDir)
@@ -111,22 +111,8 @@ class HookCallbackWireTest {
 				.build()) {
 				client.connect("run git switch -c probe");
 
-				assertDenyResponse(awaitHookResponse());
-			}
-		}
-
-		@Test
-		@DisplayName("hooks are registered with a control_request initialize")
-		void initializeEnvelope() throws Exception {
-			try (ClaudeSyncClient client = ClaudeClient.sync()
-				.workingDirectory(tempDir)
-				.claudePath(stubCli)
-				.hookRegistry(hooks)
-				.timeout(ARRIVAL_TIMEOUT)
-				.build()) {
-				client.connect("run git switch -c probe");
-
 				assertInitializeRegistersHook(awaitInitialize());
+				assertDenyResponse(awaitHookResponse());
 			}
 		}
 
@@ -137,47 +123,20 @@ class HookCallbackWireTest {
 	class Async {
 
 		@Test
-		@DisplayName("a PreToolUse deny is answered in the hook JSON output format")
+		@DisplayName("registers hooks with a control_request initialize and answers a PreToolUse deny in the hook JSON output format")
 		void preToolUseDeny() throws Exception {
-			ClaudeAsyncClient client = ClaudeClient.async()
-				.workingDirectory(tempDir)
-				.claudePath(stubCli)
-				.hookRegistry(hooks)
-				.timeout(ARRIVAL_TIMEOUT)
-				.build();
-			Disposable turn = null;
+			ClaudeAsyncClient client = asyncClient(stubCli);
 			try {
-				turn = client.connect("run git switch -c probe").messages().subscribe();
-
-				assertDenyResponse(awaitHookResponse());
-			}
-			finally {
-				if (turn != null) {
+				Disposable turn = client.connect("run git switch -c probe").messages().subscribe();
+				try {
+					assertInitializeRegistersHook(awaitInitialize());
+					assertDenyResponse(awaitHookResponse());
+				}
+				finally {
 					turn.dispose();
 				}
-				client.close().block(ARRIVAL_TIMEOUT);
-			}
-		}
-
-		@Test
-		@DisplayName("hooks are registered with a control_request initialize")
-		void initializeEnvelope() throws Exception {
-			ClaudeAsyncClient client = ClaudeClient.async()
-				.workingDirectory(tempDir)
-				.claudePath(stubCli)
-				.hookRegistry(hooks)
-				.timeout(ARRIVAL_TIMEOUT)
-				.build();
-			Disposable turn = null;
-			try {
-				turn = client.connect("run git switch -c probe").messages().subscribe();
-
-				assertInitializeRegistersHook(awaitInitialize());
 			}
 			finally {
-				if (turn != null) {
-					turn.dispose();
-				}
 				client.close().block(ARRIVAL_TIMEOUT);
 			}
 		}
@@ -185,12 +144,7 @@ class HookCallbackWireTest {
 		@Test
 		@DisplayName("a refused initialize fails the connect")
 		void initializeRefused() throws Exception {
-			ClaudeAsyncClient client = ClaudeClient.async()
-				.workingDirectory(tempDir)
-				.claudePath(writeStubCli(INITIALIZE_REFUSED))
-				.hookRegistry(hooks)
-				.timeout(ARRIVAL_TIMEOUT)
-				.build();
+			ClaudeAsyncClient client = asyncClient(writeStubCli(INITIALIZE_REFUSED));
 			try {
 				assertThatThrownBy(() -> client.connect().block(ARRIVAL_TIMEOUT)).isInstanceOf(TransportException.class)
 					.rootCause()
@@ -201,6 +155,15 @@ class HookCallbackWireTest {
 			}
 		}
 
+	}
+
+	private ClaudeAsyncClient asyncClient(String cli) {
+		return ClaudeClient.async()
+			.workingDirectory(tempDir)
+			.claudePath(cli)
+			.hookRegistry(hooks)
+			.timeout(ARRIVAL_TIMEOUT)
+			.build();
 	}
 
 	private void assertDenyResponse(JsonNode response) throws IOException {
@@ -259,16 +222,9 @@ class HookCallbackWireTest {
 
 	/**
 	 * Writes a stand-in for the Claude CLI: it records each line the SDK sends, answers
-	 * {@code initialize} with success, and asks for the {@code hook_0} PreToolUse
-	 * callback once a user message arrives. It contacts nothing.
-	 */
-	private String writeStubCli() throws IOException {
-		return writeStubCli(INITIALIZE_SUCCESS);
-	}
-
-	/**
-	 * Writes the stub CLI, answering {@code initialize} with {@code initializeReply}, a
-	 * printf format whose {@code %s} is the request ID.
+	 * {@code initialize} with {@code initializeReply} (a printf format whose {@code %s}
+	 * is the request ID), and asks for the {@code hook_0} PreToolUse callback once a user
+	 * message arrives. It contacts nothing.
 	 */
 	private String writeStubCli(String initializeReply) throws IOException {
 		Path stub = tempDir.resolve("claude-stub.sh");

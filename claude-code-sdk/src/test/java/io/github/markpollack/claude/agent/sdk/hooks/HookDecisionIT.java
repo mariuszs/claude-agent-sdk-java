@@ -20,11 +20,9 @@ import io.github.markpollack.claude.agent.sdk.ClaudeAsyncClient;
 import io.github.markpollack.claude.agent.sdk.ClaudeClient;
 import io.github.markpollack.claude.agent.sdk.ClaudeSyncClient;
 import io.github.markpollack.claude.agent.sdk.config.PermissionMode;
-import io.github.markpollack.claude.agent.sdk.parsing.ParsedMessage;
 import io.github.markpollack.claude.agent.sdk.test.ClaudeCliTestBase;
 import io.github.markpollack.claude.agent.sdk.transport.CLIOptions;
 import io.github.markpollack.claude.agent.sdk.types.AssistantMessage;
-import io.github.markpollack.claude.agent.sdk.types.ContentBlock;
 import io.github.markpollack.claude.agent.sdk.types.Message;
 import io.github.markpollack.claude.agent.sdk.types.ToolResultBlock;
 import io.github.markpollack.claude.agent.sdk.types.UserMessage;
@@ -39,11 +37,12 @@ import org.junit.jupiter.api.io.TempDir;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -67,6 +66,8 @@ class HookDecisionIT extends ClaudeCliTestBase {
 
 	private static final String DENY_REASON = "touch is blocked by the HookDecisionIT policy";
 
+	private static final Duration SESSION_TIMEOUT = Duration.ofMinutes(2);
+
 	@TempDir
 	Path tempDir;
 
@@ -75,21 +76,10 @@ class HookDecisionIT extends ClaudeCliTestBase {
 	void preToolUseDenyBlocksBash() throws Exception {
 		Path marker = tempDir.resolve("denied.txt");
 		AtomicInteger hookCalls = new AtomicInteger();
-		HookRegistry hooks = new HookRegistry();
-		hooks.registerPreToolUse("Bash", input -> {
-			hookCalls.incrementAndGet();
-			return HookOutput.builder().hookSpecificOutput(HookSpecificOutput.preToolUseDeny(DENY_REASON)).build();
-		});
 
-		List<Message> messages = runSync(hooks, touchPrompt(marker));
+		List<Message> messages = runSync(denyBash(hookCalls), touchPrompt(marker));
 
-		assertThat(hookCalls).as("the PreToolUse hook should have been called").hasPositiveValue();
-		assertThat(marker).as("the denied command must not have run").doesNotExist();
-		assertThat(toolResults(messages)).as("the CLI reports the deny as an errored tool result")
-			.anySatisfy(result -> {
-				assertThat(result.isError()).isTrue();
-				assertThat(String.valueOf(result.content())).contains(DENY_REASON);
-			});
+		assertDenied(hookCalls, marker, messages);
 	}
 
 	@Test
@@ -97,35 +87,10 @@ class HookDecisionIT extends ClaudeCliTestBase {
 	void asyncPreToolUseDenyBlocksBash() {
 		Path marker = tempDir.resolve("denied-async.txt");
 		AtomicInteger hookCalls = new AtomicInteger();
-		HookRegistry hooks = new HookRegistry();
-		hooks.registerPreToolUse("Bash", input -> {
-			hookCalls.incrementAndGet();
-			return HookOutput.builder().hookSpecificOutput(HookSpecificOutput.preToolUseDeny(DENY_REASON)).build();
-		});
 
-		ClaudeAsyncClient client = ClaudeClient.async()
-			.workingDirectory(tempDir)
-			.claudePath(getClaudeCliPath())
-			.model(HAIKU_MODEL)
-			.permissionMode(PermissionMode.BYPASS_PERMISSIONS)
-			.hookRegistry(hooks)
-			.timeout(Duration.ofMinutes(2))
-			.build();
-		List<Message> messages = new ArrayList<>();
-		try {
-			client.connect(touchPrompt(marker)).messages().doOnNext(messages::add).blockLast(Duration.ofMinutes(2));
-		}
-		finally {
-			client.close().block(Duration.ofSeconds(30));
-		}
+		List<Message> messages = runAsync(denyBash(hookCalls), touchPrompt(marker));
 
-		assertThat(hookCalls).as("the PreToolUse hook should have been called").hasPositiveValue();
-		assertThat(marker).as("the denied command must not have run").doesNotExist();
-		assertThat(toolResults(messages)).as("the CLI reports the deny as an errored tool result")
-			.anySatisfy(result -> {
-				assertThat(result.isError()).isTrue();
-				assertThat(String.valueOf(result.content())).contains(DENY_REASON);
-			});
+		assertDenied(hookCalls, marker, messages);
 	}
 
 	@Test
@@ -158,9 +123,28 @@ class HookDecisionIT extends ClaudeCliTestBase {
 
 		String text = messages.stream()
 			.filter(AssistantMessage.class::isInstance)
-			.map(m -> ((AssistantMessage) m).getTextContent().orElse(""))
-			.reduce("", String::concat);
+			.map(m -> ((AssistantMessage) m).text())
+			.collect(Collectors.joining());
 		assertThat(text).contains("PELICAN-7731");
+	}
+
+	private static HookRegistry denyBash(AtomicInteger hookCalls) {
+		HookRegistry hooks = new HookRegistry();
+		hooks.registerPreToolUse("Bash", input -> {
+			hookCalls.incrementAndGet();
+			return HookOutput.builder().hookSpecificOutput(HookSpecificOutput.preToolUseDeny(DENY_REASON)).build();
+		});
+		return hooks;
+	}
+
+	private static void assertDenied(AtomicInteger hookCalls, Path marker, List<Message> messages) {
+		assertThat(hookCalls).as("the PreToolUse hook should have been called").hasPositiveValue();
+		assertThat(marker).as("the denied command must not have run").doesNotExist();
+		assertThat(toolResults(messages)).as("the CLI reports the deny as an errored tool result")
+			.anySatisfy(result -> {
+				assertThat(result.isError()).isTrue();
+				assertThat(String.valueOf(result.content())).contains(DENY_REASON);
+			});
 	}
 
 	private List<Message> runSync(HookRegistry hooks, String prompt) {
@@ -171,18 +155,28 @@ class HookDecisionIT extends ClaudeCliTestBase {
 			.model(HAIKU_MODEL)
 			.permissionMode(PermissionMode.BYPASS_PERMISSIONS)
 			.hookRegistry(hooks)
-			.timeout(Duration.ofMinutes(2))
+			.timeout(SESSION_TIMEOUT)
 			.build()) {
-			client.connect(prompt);
-			Iterator<ParsedMessage> response = client.receiveResponse();
-			while (response.hasNext()) {
-				ParsedMessage parsed = response.next();
-				if (parsed.isRegularMessage()) {
-					messages.add(parsed.asMessage());
-				}
-			}
+			client.connectAndReceive(prompt).forEach(messages::add);
 		}
 		return messages;
+	}
+
+	private List<Message> runAsync(HookRegistry hooks, String prompt) {
+		ClaudeAsyncClient client = ClaudeClient.async()
+			.workingDirectory(tempDir)
+			.claudePath(getClaudeCliPath())
+			.model(HAIKU_MODEL)
+			.permissionMode(PermissionMode.BYPASS_PERMISSIONS)
+			.hookRegistry(hooks)
+			.timeout(SESSION_TIMEOUT)
+			.build();
+		try {
+			return client.connect(prompt).messages().collectList().block(SESSION_TIMEOUT);
+		}
+		finally {
+			client.close().block(Duration.ofSeconds(30));
+		}
 	}
 
 	private static String touchPrompt(Path file) {
@@ -191,17 +185,14 @@ class HookDecisionIT extends ClaudeCliTestBase {
 	}
 
 	private static List<ToolResultBlock> toolResults(List<Message> messages) {
-		List<ToolResultBlock> results = new ArrayList<>();
-		for (Message message : messages) {
-			if (message instanceof UserMessage user && user.getContentAsBlocks() != null) {
-				for (ContentBlock block : user.getContentAsBlocks()) {
-					if (block instanceof ToolResultBlock result) {
-						results.add(result);
-					}
-				}
-			}
-		}
-		return results;
+		return messages.stream()
+			.filter(UserMessage.class::isInstance)
+			.map(message -> ((UserMessage) message).getContentAsBlocks())
+			.filter(Objects::nonNull)
+			.flatMap(List::stream)
+			.filter(ToolResultBlock.class::isInstance)
+			.map(ToolResultBlock.class::cast)
+			.toList();
 	}
 
 }

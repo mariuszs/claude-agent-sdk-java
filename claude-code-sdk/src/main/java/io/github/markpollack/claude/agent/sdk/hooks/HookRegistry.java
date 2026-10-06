@@ -248,15 +248,18 @@ public class HookRegistry {
 			logger.warn("Hook not found: {}", hookId);
 			return null;
 		}
+		return execute(registration, input);
+	}
 
+	private HookOutput execute(HookRegistration registration, HookInput input) {
 		try {
-			logger.debug("Executing hook: id={}, event={}", hookId, registration.event());
+			logger.debug("Executing hook: id={}, event={}", registration.id(), registration.event());
 			HookOutput output = registration.callback().handle(input);
-			logger.debug("Hook result: id={}, continue={}", hookId, output.continueExecution());
+			logger.debug("Hook result: id={}, continue={}", registration.id(), output.continueExecution());
 			return output;
 		}
 		catch (Exception e) {
-			logger.error("Hook execution failed: id={}", hookId, e);
+			logger.error("Hook execution failed: id={}", registration.id(), e);
 			// Return a safe default on error
 			return HookOutput.block("Hook execution failed: " + e.getMessage());
 		}
@@ -290,11 +293,11 @@ public class HookRegistry {
 	 */
 	public ControlResponse handleCallback(String requestId, String hookId, HookInput input) {
 		HookRegistration registration = hooksById.get(hookId);
-		HookOutput output = registration != null ? executeHook(hookId, input) : null;
-		if (output == null) {
+		if (registration == null) {
+			logger.warn("Hook not found: {}", hookId);
 			return ControlResponse.error(requestId, "No hook registered for callback ID: " + hookId);
 		}
-		return ControlResponse.success(requestId, withEventName(output, registration));
+		return ControlResponse.success(requestId, withEventName(execute(registration, input), registration));
 	}
 
 	private static HookOutput withEventName(HookOutput output, HookRegistration registration) {
@@ -304,12 +307,7 @@ public class HookRegistry {
 		}
 		String expected = registration.event().getProtocolName();
 		if (specific.hookEventName() == null) {
-			HookOutput.HookSpecificOutput named = new HookOutput.HookSpecificOutput(expected,
-					specific.permissionDecision(), specific.permissionDecisionReason(), specific.updatedInput(),
-					specific.additionalContext());
-			return new HookOutput(output.continueExecution(), output.suppressOutput(), output.stopReason(),
-					output.decision(), output.systemMessage(), output.reason(), output.asyncExecution(),
-					output.asyncTimeout(), named);
+			return output.withHookSpecificOutput(specific.withHookEventName(expected));
 		}
 		if (!expected.equals(specific.hookEventName())) {
 			logger.warn(

@@ -82,6 +82,14 @@ public record HookOutput(
 	}
 
 	/**
+	 * Returns a copy of this output with {@code hookSpecificOutput} replaced.
+	 */
+	public HookOutput withHookSpecificOutput(HookSpecificOutput hookSpecificOutput) {
+		return new HookOutput(continueExecution, suppressOutput, stopReason, decision, systemMessage, reason,
+				asyncExecution, asyncTimeout, hookSpecificOutput);
+	}
+
+	/**
 	 * Create builder for fluent construction.
 	 */
 	public static Builder builder() {
@@ -224,6 +232,14 @@ public record HookOutput(
 		 */
 		public static HookSpecificOutput userPromptSubmit(String additionalContext) {
 			return new HookSpecificOutput("UserPromptSubmit", null, null, null, additionalContext);
+		}
+
+		/**
+		 * Returns a copy of this output with {@code hookEventName} replaced.
+		 */
+		public HookSpecificOutput withHookEventName(String hookEventName) {
+			return new HookSpecificOutput(hookEventName, permissionDecision, permissionDecisionReason, updatedInput,
+					additionalContext);
 		}
 
 		/**

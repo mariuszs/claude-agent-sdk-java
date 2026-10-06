@@ -386,6 +386,13 @@ class HookRegistryTest {
 	@DisplayName("Hook Callback Response")
 	class HookCallbackResponseTests {
 
+		private static final String DENY_JSON = """
+				{"hookSpecificOutput": {
+				  "hookEventName": "PreToolUse",
+				  "permissionDecision": "deny",
+				  "permissionDecisionReason": "branch changes are blocked"}}
+				""";
+
 		private final ObjectMapper mapper = new ObjectMapper();
 
 		private final HookInput preToolUseInput = new HookInput.PreToolUseInput("PreToolUse", "sess_1", "/tmp/t.md",
@@ -403,12 +410,7 @@ class HookRegistryTest {
 
 			assertThat(wire.at("/response/subtype").asText()).isEqualTo("success");
 			assertThat(wire.at("/response/request_id").asText()).isEqualTo("req_1");
-			assertThat(wire.at("/response/response")).isEqualTo(mapper.readTree("""
-					{"hookSpecificOutput": {
-					  "hookEventName": "PreToolUse",
-					  "permissionDecision": "deny",
-					  "permissionDecisionReason": "branch changes are blocked"}}
-					"""));
+			assertThat(wire.at("/response/response")).isEqualTo(mapper.readTree(DENY_JSON));
 		}
 
 		@Test
@@ -420,9 +422,7 @@ class HookRegistryTest {
 						.hookSpecificOutput(HookOutput.HookSpecificOutput.preToolUseAllow("read-only command"))
 						.build());
 
-			JsonNode wire = wire(registry.handleCallback("req_2", id, preToolUseInput));
-
-			assertThat(wire.at("/response/response")).isEqualTo(mapper.readTree("""
+			assertThat(sent(id)).isEqualTo(mapper.readTree("""
 					{"continue": true,
 					 "hookSpecificOutput": {
 					   "hookEventName": "PreToolUse",
@@ -440,9 +440,7 @@ class HookRegistryTest {
 								HookOutput.HookSpecificOutput.preToolUseModify(Map.of("command", "git status")))
 						.build());
 
-			JsonNode wire = wire(registry.handleCallback("req_3", id, preToolUseInput));
-
-			assertThat(wire.at("/response/response")).isEqualTo(mapper.readTree("""
+			assertThat(sent(id)).isEqualTo(mapper.readTree("""
 					{"hookSpecificOutput": {
 					  "hookEventName": "PreToolUse",
 					  "updatedInput": {"command": "git status"}}}
@@ -459,18 +457,16 @@ class HookRegistryTest {
 				.hookSpecificOutput(HookOutput.HookSpecificOutput.userPromptSubmit("today is release day"))
 				.build());
 
-			assertThat(wire(registry.handleCallback("req_4", post, preToolUseInput)).at("/response/response"))
-				.isEqualTo(mapper.readTree("""
-						{"hookSpecificOutput": {
-						  "hookEventName": "PostToolUse",
-						  "additionalContext": "the build is red"}}
-						"""));
-			assertThat(wire(registry.handleCallback("req_5", prompt, preToolUseInput)).at("/response/response"))
-				.isEqualTo(mapper.readTree("""
-						{"hookSpecificOutput": {
-						  "hookEventName": "UserPromptSubmit",
-						  "additionalContext": "today is release day"}}
-						"""));
+			assertThat(sent(post)).isEqualTo(mapper.readTree("""
+					{"hookSpecificOutput": {
+					  "hookEventName": "PostToolUse",
+					  "additionalContext": "the build is red"}}
+					"""));
+			assertThat(sent(prompt)).isEqualTo(mapper.readTree("""
+					{"hookSpecificOutput": {
+					  "hookEventName": "UserPromptSubmit",
+					  "additionalContext": "today is release day"}}
+					"""));
 		}
 
 		@Test
@@ -486,9 +482,7 @@ class HookRegistryTest {
 						.reason("not allowed")
 						.build());
 
-			JsonNode wire = wire(registry.handleCallback("req_6", id, preToolUseInput));
-
-			assertThat(wire.at("/response/response")).isEqualTo(mapper.readTree("""
+			assertThat(sent(id)).isEqualTo(mapper.readTree("""
 					{"continue": false, "suppressOutput": true, "stopReason": "policy stop",
 					 "decision": "block", "systemMessage": "stopped by policy", "reason": "not allowed"}
 					"""));
@@ -505,14 +499,7 @@ class HookRegistryTest {
 							.build())
 						.build());
 
-			JsonNode wire = wire(registry.handleCallback("req_8", id, preToolUseInput));
-
-			assertThat(wire.at("/response/response")).isEqualTo(mapper.readTree("""
-					{"hookSpecificOutput": {
-					  "hookEventName": "PreToolUse",
-					  "permissionDecision": "deny",
-					  "permissionDecisionReason": "branch changes are blocked"}}
-					"""));
+			assertThat(sent(id)).isEqualTo(mapper.readTree(DENY_JSON));
 		}
 
 		@Test
@@ -522,9 +509,7 @@ class HookRegistryTest {
 				.hookSpecificOutput(HookOutput.HookSpecificOutput.preToolUseDeny("wrong event"))
 				.build());
 
-			JsonNode wire = wire(registry.handleCallback("req_9", id, preToolUseInput));
-
-			assertThat(wire.at("/response/response/hookSpecificOutput/hookEventName").asText()).isEqualTo("PreToolUse");
+			assertThat(sent(id).at("/hookSpecificOutput/hookEventName").asText()).isEqualTo("PreToolUse");
 		}
 
 		@Test
@@ -535,6 +520,14 @@ class HookRegistryTest {
 			assertThat(wire.at("/response/subtype").asText()).isEqualTo("error");
 			assertThat(wire.at("/response/request_id").asText()).isEqualTo("req_7");
 			assertThat(wire.at("/response/error").asText()).contains("hook_missing");
+		}
+
+		/**
+		 * The hook output {@code handleCallback} sends for the hook registered under
+		 * {@code id}.
+		 */
+		private JsonNode sent(String id) throws Exception {
+			return wire(registry.handleCallback("req", id, preToolUseInput)).at("/response/response");
 		}
 
 		private JsonNode wire(ControlResponse response) throws Exception {

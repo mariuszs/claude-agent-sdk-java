@@ -484,11 +484,8 @@ public class DefaultClaudeSyncClient implements ClaudeSyncClient {
 
 	private ControlResponse handleHookCallback(String requestId, ControlRequest.HookCallbackRequest hookCallback) {
 		try {
-			String callbackId = hookCallback.callbackId();
-			Map<String, Object> inputMap = hookCallback.input();
-
-			HookInput input = objectMapper.convertValue(inputMap, HookInput.class);
-			return hookRegistry.handleCallback(requestId, callbackId, input);
+			HookInput input = objectMapper.convertValue(hookCallback.input(), HookInput.class);
+			return hookRegistry.handleCallback(requestId, hookCallback.callbackId(), input);
 		}
 		catch (Exception e) {
 			logger.error("Error executing hook callback", e);
