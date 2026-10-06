@@ -769,13 +769,30 @@ public class DefaultClaudeAsyncClient implements ClaudeAsyncClient {
 		try {
 			String requestId = sessionPrefix + "_" + requestCounter.incrementAndGet();
 
+			// The CLI only reads the control_request envelope with the payload nested
+			// under "request", as the sync client sends it; any other shape is dropped
+			// without a reply.
 			Map<String, Object> fullRequest = new LinkedHashMap<>();
-			fullRequest.put("type", "control");
+			fullRequest.put("type", "control_request");
 			fullRequest.put("request_id", requestId);
-			fullRequest.putAll(request);
+			fullRequest.put("request", request);
+
+			// Not awaited, but registered, so the CLI's reply is matched rather than
+			// reported as an unknown response, and a refusal is logged.
+			Mono.<Map<String, Object>>create(sink -> pendingResponses.put(requestId, sink))
+				.doOnError(e -> logger.warn("Control request {} ({}) failed: {}", requestId, request.get("subtype"),
+						e.getMessage()))
+				.onErrorComplete()
+				.subscribe();
 
 			String json = objectMapper.writeValueAsString(fullRequest);
-			transportRef.get().sendMessage(json);
+			try {
+				transportRef.get().sendMessage(json);
+			}
+			catch (Exception e) {
+				pendingResponses.remove(requestId);
+				throw e;
+			}
 
 			logger.debug("Sent control request: id={}, subtype={}", requestId, request.get("subtype"));
 		}

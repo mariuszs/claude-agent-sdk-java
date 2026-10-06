@@ -16,6 +16,7 @@
 
 package io.github.markpollack.claude.agent.sdk.hooks;
 
+import io.github.markpollack.claude.agent.sdk.ClaudeAsyncClient;
 import io.github.markpollack.claude.agent.sdk.ClaudeClient;
 import io.github.markpollack.claude.agent.sdk.ClaudeSyncClient;
 import io.github.markpollack.claude.agent.sdk.config.PermissionMode;
@@ -81,6 +82,42 @@ class HookDecisionIT extends ClaudeCliTestBase {
 		});
 
 		List<Message> messages = runSync(hooks, touchPrompt(marker));
+
+		assertThat(hookCalls).as("the PreToolUse hook should have been called").hasPositiveValue();
+		assertThat(marker).as("the denied command must not have run").doesNotExist();
+		assertThat(toolResults(messages)).as("the CLI reports the deny as an errored tool result")
+			.anySatisfy(result -> {
+				assertThat(result.isError()).isTrue();
+				assertThat(String.valueOf(result.content())).contains(DENY_REASON);
+			});
+	}
+
+	@Test
+	@DisplayName("Async client: a PreToolUse deny stops the Bash command")
+	void asyncPreToolUseDenyBlocksBash() {
+		Path marker = tempDir.resolve("denied-async.txt");
+		AtomicInteger hookCalls = new AtomicInteger();
+		HookRegistry hooks = new HookRegistry();
+		hooks.registerPreToolUse("Bash", input -> {
+			hookCalls.incrementAndGet();
+			return HookOutput.builder().hookSpecificOutput(HookSpecificOutput.preToolUseDeny(DENY_REASON)).build();
+		});
+
+		ClaudeAsyncClient client = ClaudeClient.async()
+			.workingDirectory(tempDir)
+			.claudePath(getClaudeCliPath())
+			.model(HAIKU_MODEL)
+			.permissionMode(PermissionMode.BYPASS_PERMISSIONS)
+			.hookRegistry(hooks)
+			.timeout(Duration.ofMinutes(2))
+			.build();
+		List<Message> messages = new ArrayList<>();
+		try {
+			client.connect(touchPrompt(marker)).messages().doOnNext(messages::add).blockLast(Duration.ofMinutes(2));
+		}
+		finally {
+			client.close().block(Duration.ofSeconds(30));
+		}
 
 		assertThat(hookCalls).as("the PreToolUse hook should have been called").hasPositiveValue();
 		assertThat(marker).as("the denied command must not have run").doesNotExist();

@@ -44,8 +44,8 @@ import reactor.core.Disposable;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Drives each client through one {@code hook_callback} round trip against a stub CLI and
- * checks the control response it writes back.
+ * Drives each client through hook registration and one {@code hook_callback} round trip
+ * against a stub CLI, and checks what it writes to the CLI's stdin.
  *
  * <p>
  * The stub answers {@code initialize}, sends a PreToolUse {@code hook_callback} when the
@@ -107,6 +107,21 @@ class HookCallbackWireTest {
 			}
 		}
 
+		@Test
+		@DisplayName("hooks are registered with a control_request initialize")
+		void initializeEnvelope() throws Exception {
+			try (ClaudeSyncClient client = ClaudeClient.sync()
+				.workingDirectory(tempDir)
+				.claudePath(stubCli)
+				.hookRegistry(hooks)
+				.timeout(ARRIVAL_TIMEOUT)
+				.build()) {
+				client.connect("run git switch -c probe");
+
+				assertInitializeRegistersHook(awaitInitialize());
+			}
+		}
+
 	}
 
 	@Nested
@@ -136,6 +151,29 @@ class HookCallbackWireTest {
 			}
 		}
 
+		@Test
+		@DisplayName("hooks are registered with a control_request initialize")
+		void initializeEnvelope() throws Exception {
+			ClaudeAsyncClient client = ClaudeClient.async()
+				.workingDirectory(tempDir)
+				.claudePath(stubCli)
+				.hookRegistry(hooks)
+				.timeout(ARRIVAL_TIMEOUT)
+				.build();
+			Disposable turn = null;
+			try {
+				turn = client.connect("run git switch -c probe").messages().subscribe();
+
+				assertInitializeRegistersHook(awaitInitialize());
+			}
+			finally {
+				if (turn != null) {
+					turn.dispose();
+				}
+				client.close().block(ARRIVAL_TIMEOUT);
+			}
+		}
+
 	}
 
 	private void assertDenyResponse(JsonNode response) throws IOException {
@@ -146,6 +184,22 @@ class HookCallbackWireTest {
 				  "permissionDecision": "deny",
 				  "permissionDecisionReason": "%s"}}
 				""".formatted(DENY_REASON)));
+	}
+
+	private void assertInitializeRegistersHook(JsonNode initialize) throws IOException {
+		assertThat(initialize.path("request_id").asText()).isNotBlank();
+		assertThat(initialize.at("/request/hooks")).isEqualTo(MAPPER.readTree("""
+				{"PreToolUse": [{"matcher": "Bash", "hookCallbackIds": ["hook_0"], "timeout": 60}]}
+				"""));
+	}
+
+	/**
+	 * The initialize request, in the only envelope the CLI reads: {@code control_request}
+	 * with the payload nested under {@code request}.
+	 */
+	private JsonNode awaitInitialize() throws Exception {
+		return awaitLine(node -> "control_request".equals(node.path("type").asText())
+				&& "initialize".equals(node.at("/request/subtype").asText()));
 	}
 
 	private JsonNode awaitHookResponse() throws Exception {
