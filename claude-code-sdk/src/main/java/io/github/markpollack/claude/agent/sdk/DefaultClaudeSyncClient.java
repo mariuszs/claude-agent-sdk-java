@@ -19,6 +19,7 @@ package io.github.markpollack.claude.agent.sdk;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import io.github.markpollack.claude.agent.sdk.exceptions.ResultException;
 import io.github.markpollack.claude.agent.sdk.exceptions.TransportException;
 import io.github.markpollack.claude.agent.sdk.exceptions.ClaudeSDKException;
 import io.github.markpollack.claude.agent.sdk.hooks.HookCallback;
@@ -35,6 +36,7 @@ import io.github.markpollack.claude.agent.sdk.transport.CLIOptions;
 import io.github.markpollack.claude.agent.sdk.types.AssistantMessage;
 import io.github.markpollack.claude.agent.sdk.types.Message;
 import io.github.markpollack.claude.agent.sdk.types.ResultMessage;
+import io.github.markpollack.claude.agent.sdk.types.SystemMessage;
 import io.github.markpollack.claude.agent.sdk.types.control.ControlRequest;
 import io.github.markpollack.claude.agent.sdk.types.control.ControlResponse;
 import io.github.markpollack.claude.agent.sdk.types.control.HookEvent;
@@ -107,6 +109,11 @@ public class DefaultClaudeSyncClient implements ClaudeSyncClient {
 	// produced no result yet counts as waiting, so a CLI that fails at startup is
 	// reported too.
 	private final AtomicBoolean resultPending = new AtomicBoolean(true);
+
+	// The last result, if it reported an error and nothing but a session-state change has
+	// followed it. The CLI exits non-zero on purpose after an error result, and that exit
+	// is then reported with the result.
+	private final AtomicReference<ResultMessage> lastErrorResult = new AtomicReference<>();
 
 	// Runtime state tracking
 	private final AtomicReference<String> currentModel = new AtomicReference<>();
@@ -446,10 +453,9 @@ public class DefaultClaudeSyncClient implements ClaudeSyncClient {
 	private void handleMessage(ParsedMessage message) {
 		// Detect session-end signal from transport (process exited, stream closed)
 		if (message instanceof ParsedMessage.EndOfStream) {
-			TransportException exitError = resultPending.get() ? exitedBeforeResult() : null;
+			TransportException exitError = exitError();
 			if (exitError != null) {
-				logger.debug("CLI exited with code {} before its result — failing message receivers",
-						exitError.getExitCode());
+				logger.debug("CLI exited with code {} — failing message receivers", exitError.getExitCode());
 				if (messageIterator != null) {
 					messageIterator.completeWithError(exitError);
 				}
@@ -469,8 +475,13 @@ public class DefaultClaudeSyncClient implements ClaudeSyncClient {
 		}
 		// Forward regular messages to both receivers
 		if (message.isRegularMessage()) {
-			if (message.asMessage() instanceof ResultMessage) {
+			Message msg = message.asMessage();
+			if (msg instanceof ResultMessage result) {
 				resultPending.set(false);
+				lastErrorResult.set(result.isError() ? result : null);
+			}
+			else if (!(msg instanceof SystemMessage system && "session_state_changed".equals(system.subtype()))) {
+				lastErrorResult.set(null);
 			}
 			messageIterator.offer(message);
 			blockingReceiver.offer(message);
@@ -478,21 +489,41 @@ public class DefaultClaudeSyncClient implements ClaudeSyncClient {
 	}
 
 	/**
-	 * The error for a CLI whose output ended before the current turn's result, if it
-	 * exited with a non-zero status. Waits for the CLI to exit, however long that takes:
-	 * a status that is not known yet would otherwise end the stream as if nothing had
-	 * gone wrong. A zero status, or none because the client was closed, yields
-	 * {@code null}, and the stream ends as it always has.
+	 * The error for a CLI whose output has ended, if it exited with a non-zero status.
+	 *
+	 * <p>
+	 * While the current turn still waits for its result, this waits for the CLI to exit,
+	 * however long that takes: a status that is not known yet would otherwise end the
+	 * stream as if nothing had gone wrong. After the result, it takes the status known
+	 * within the transport's grace period, so a CLI slow to exit after a turn that worked
+	 * does not hold up the end of the stream.
+	 * </p>
+	 *
+	 * <p>
+	 * An exit after an error result yields a {@link ResultException} carrying that
+	 * result. A zero status, or none because the client was closed or the CLI did not
+	 * exit in time after the result, yields {@code null}, and the stream ends normally.
+	 * </p>
 	 */
-	private TransportException exitedBeforeResult() {
+	private TransportException exitError() {
 		StreamingTransport t = transport;
-		Integer exitCode = t != null ? t.awaitExitCode() : null;
+		if (t == null) {
+			return null;
+		}
+		boolean beforeResult = resultPending.get();
+		Integer exitCode = beforeResult ? t.awaitExitCode() : t.getExitCode();
 		if (exitCode == null || exitCode == 0) {
 			return null;
 		}
-		String stderr = t.getStderrTail();
-		return new TransportException("Claude CLI exited before its result", exitCode,
-				stderr.isEmpty() ? null : stderr);
+		String tail = t.getStderrTail();
+		String stderr = tail.isEmpty() ? null : tail;
+		ResultMessage errorResult = lastErrorResult.get();
+		if (errorResult != null) {
+			return new ResultException(errorResult, exitCode, stderr);
+		}
+		return new TransportException(
+				beforeResult ? "Claude CLI exited before its result" : "Claude CLI exited after its result", exitCode,
+				stderr);
 	}
 
 	private ControlResponse handleControlRequest(ControlRequest request) {

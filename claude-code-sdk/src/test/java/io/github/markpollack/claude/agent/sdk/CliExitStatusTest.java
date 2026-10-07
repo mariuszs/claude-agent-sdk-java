@@ -29,6 +29,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
 import io.github.markpollack.claude.agent.sdk.exceptions.CLINotFoundException;
+import io.github.markpollack.claude.agent.sdk.exceptions.ResultException;
 import io.github.markpollack.claude.agent.sdk.exceptions.TransportException;
 import io.github.markpollack.claude.agent.sdk.parsing.ParsedMessage;
 import io.github.markpollack.claude.agent.sdk.streaming.MessageReceiver;
@@ -53,8 +54,10 @@ import static org.assertj.core.api.Assertions.catchThrowableOfType;
  * <p>
  * A non-zero exit before the result fails the iteration with a {@link TransportException}
  * carrying the exit status and the CLI's last stderr lines, so a caller can tell a
- * crashed or killed CLI from one that simply closed its output. A zero exit, and any exit
- * after the result, end the iteration as they always have.
+ * crashed or killed CLI from one that simply closed its output. A non-zero exit after the
+ * result fails the iteration once the result is delivered, with a {@link ResultException}
+ * when that result reported an error, as the Python SDK does. A zero exit ends the
+ * iteration as it always has.
  * </p>
  *
  * <p>
@@ -78,6 +81,13 @@ class CliExitStatusTest {
 
 	@TempDir
 	Path tempDir;
+
+	/** An error result as the CLI reports a failed run, with the given extra fields. */
+	private static String errorResult(String subtype, String fields) {
+		return """
+				{"type":"result","subtype":"%s","is_error":true,"duration_ms":1,"duration_api_ms":1,"num_turns":1,\
+				"session_id":"stub-session","total_cost_usd":0.0%s}""".formatted(subtype, fields);
+	}
 
 	@Test
 	@DisplayName("a non-zero exit before the result throws with the exit status and stderr")
@@ -241,14 +251,161 @@ class CliExitStatusTest {
 	}
 
 	@Test
-	@DisplayName("a non-zero exit after the result ends the iteration without an error, as before")
-	void nonZeroExitAfterResultEndsQuietly() throws Exception {
+	@DisplayName("a non-zero exit after a successful result throws once the result is delivered")
+	void nonZeroExitAfterResultThrowsAfterTheResult() throws Exception {
+		String cli = stubCli("""
+				read -r prompt
+				echo '%s'
+				echo '%s'
+				echo 'Error: crashed after the turn' >&2
+				exit 3
+				""".formatted(INIT, RESULT));
+
+		try (ClaudeSyncClient client = newClient(cli)) {
+			client.connect("hello");
+			List<Message> received = new ArrayList<>();
+
+			TransportException error = catchThrowableOfType(TransportException.class,
+					() -> drain(client.receiveMessages(), received));
+
+			assertThat(received).last().isInstanceOf(ResultMessage.class);
+			assertThat(error).isNotNull().isNotInstanceOf(ResultException.class);
+			assertThat(error.getExitCode()).isEqualTo(3);
+			assertThat(error.getStderr()).isEqualTo("Error: crashed after the turn");
+			assertThat(error).hasMessageStartingWith("Claude CLI exited after its result");
+		}
+	}
+
+	@Test
+	@DisplayName("a turn ends at its result, and the exit that follows fails the next turn")
+	void exitAfterResultFailsTheNextTurn() throws Exception {
 		String cli = stubCli("""
 				read -r prompt
 				echo '%s'
 				echo '%s'
 				exit 3
 				""".formatted(INIT, RESULT));
+
+		try (ClaudeSyncClient client = newClient(cli)) {
+			client.connect("first");
+			List<Message> first = new ArrayList<>();
+			drain(client.receiveResponse(), first);
+			assertThat(first).last().isInstanceOf(ResultMessage.class);
+
+			client.query("second");
+
+			TransportException error = catchThrowableOfType(TransportException.class,
+					() -> drain(client.receiveResponse(), new ArrayList<>()));
+			assertThat(error).isNotNull();
+			assertThat(error.getExitCode()).isEqualTo(3);
+		}
+	}
+
+	@Test
+	@DisplayName("an error result and the exit after it throw a ResultException with the result's errors")
+	void errorResultThenExitThrowsResultException() throws Exception {
+		String cli = stubCli("""
+				read -r prompt
+				echo '%s'
+				echo '%s'
+				exit 1
+				""".formatted(INIT, errorResult("error_max_turns",
+				",\"errors\":[\"Reached maximum number of turns (60)\",\"Stopped early\"]")));
+
+		try (ClaudeSyncClient client = newClient(cli)) {
+			client.connect("hello");
+			List<Message> received = new ArrayList<>();
+
+			ResultException error = catchThrowableOfType(ResultException.class,
+					() -> drain(client.receiveMessages(), received));
+
+			assertThat(received).last().isInstanceOf(ResultMessage.class);
+			assertThat(error).isNotNull();
+			assertThat(error.getExitCode()).isEqualTo(1);
+			assertThat(error.getResult().subtype()).isEqualTo("error_max_turns");
+			assertThat(error.getResult().errors()).containsExactly("Reached maximum number of turns (60)",
+					"Stopped early");
+			assertThat(error).hasMessageStartingWith(
+					"Claude CLI returned an error result: Reached maximum number of turns (60); Stopped early");
+		}
+	}
+
+	@Test
+	@DisplayName("an API error reported as success takes its text from the result, not the subtype")
+	void apiErrorResultTakesItsTextFromTheResult() throws Exception {
+		String cli = stubCli("""
+				read -r prompt
+				echo '%s'
+				echo '%s'
+				exit 1
+				""".formatted(INIT, errorResult("success", ",\"result\":\"API Error: 529 Overloaded\"")));
+
+		try (ClaudeSyncClient client = newClient(cli)) {
+			client.connect("hello");
+
+			ResultException error = catchThrowableOfType(ResultException.class,
+					() -> drain(client.receiveMessages(), new ArrayList<>()));
+
+			assertThat(error).isNotNull()
+				.hasMessageStartingWith("Claude CLI returned an error result: API Error: 529 Overloaded");
+		}
+	}
+
+	@Test
+	@DisplayName("an error result without errors or text falls back to its subtype")
+	void errorResultWithoutTextFallsBackToTheSubtype() throws Exception {
+		String cli = stubCli("""
+				read -r prompt
+				echo '%s'
+				echo '%s'
+				exit 1
+				""".formatted(INIT, errorResult("error_during_execution", "")));
+
+		try (ClaudeSyncClient client = newClient(cli)) {
+			client.connect("hello");
+
+			ResultException error = catchThrowableOfType(ResultException.class,
+					() -> drain(client.receiveMessages(), new ArrayList<>()));
+
+			assertThat(error).isNotNull()
+				.hasMessageStartingWith("Claude CLI returned an error result: error_during_execution");
+		}
+	}
+
+	@Test
+	@DisplayName("an exit after a later successful result is not blamed on an earlier error result")
+	void exitAfterErrorThenSuccessResultIsAPlainExit() throws Exception {
+		String cli = stubCli("""
+				read -r prompt
+				echo '%s'
+				echo '%s'
+				read -r prompt
+				echo '%s'
+				exit 1
+				""".formatted(INIT, errorResult("error_during_execution", ""), RESULT));
+
+		try (ClaudeSyncClient client = newClient(cli)) {
+			client.connect("first");
+			drain(client.receiveResponse(), new ArrayList<>());
+			client.query("second");
+
+			TransportException error = catchThrowableOfType(TransportException.class,
+					() -> drain(client.receiveMessages(), new ArrayList<>()));
+
+			assertThat(error).isNotNull().isNotInstanceOf(ResultException.class);
+			assertThat(error.getExitCode()).isEqualTo(1);
+		}
+	}
+
+	@Test
+	@DisplayName("a zero exit after an error result ends the iteration without an error")
+	void zeroExitAfterErrorResultEndsQuietly() throws Exception {
+		String cli = stubCli("""
+				read -r prompt
+				echo '%s'
+				echo '%s'
+				exit 0
+				""".formatted(INIT, errorResult("error_during_execution", "")));
 
 		try (ClaudeSyncClient client = newClient(cli)) {
 			client.connect("hello");
