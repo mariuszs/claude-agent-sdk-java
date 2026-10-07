@@ -75,6 +75,11 @@ public class MessageStreamIterator implements Iterator<ParsedMessage>, Iterable<
 
 	private final AtomicReference<Throwable> error = new AtomicReference<>();
 
+	// Set once END_OF_STREAM has been taken from the queue. The sentinel is offered only
+	// once, so every later hasNext() must end, or fail, from this flag instead of waiting
+	// for a sentinel that never comes again.
+	private volatile boolean ended = false;
+
 	private ParsedMessage nextMessage;
 
 	/**
@@ -157,6 +162,10 @@ public class MessageStreamIterator implements Iterator<ParsedMessage>, Iterable<
 			return true;
 		}
 
+		if (ended) {
+			return endOfStream();
+		}
+
 		// Try to fetch next message
 		// We rely solely on END_OF_STREAM sentinel for termination to avoid race
 		// conditions.
@@ -167,15 +176,8 @@ public class MessageStreamIterator implements Iterator<ParsedMessage>, Iterable<
 
 				if (nextMessage == END_OF_STREAM) {
 					nextMessage = null;
-					// Check for error
-					Throwable err = error.get();
-					if (err instanceof ClaudeSDKException sdkException) {
-						throw sdkException;
-					}
-					if (err != null) {
-						throw new StreamException("Stream failed", err);
-					}
-					return false;
+					ended = true;
+					return endOfStream();
 				}
 
 				if (nextMessage != null) {
@@ -192,6 +194,21 @@ public class MessageStreamIterator implements Iterator<ParsedMessage>, Iterable<
 			Thread.currentThread().interrupt();
 		}
 
+		return false;
+	}
+
+	/**
+	 * Ends the iteration at the end of the stream: returns {@code false}, or throws the
+	 * error the stream failed with, on this call and on every later one.
+	 */
+	private boolean endOfStream() {
+		Throwable err = error.get();
+		if (err instanceof ClaudeSDKException sdkException) {
+			throw sdkException;
+		}
+		if (err != null) {
+			throw new StreamException("Stream failed", err);
+		}
 		return false;
 	}
 
