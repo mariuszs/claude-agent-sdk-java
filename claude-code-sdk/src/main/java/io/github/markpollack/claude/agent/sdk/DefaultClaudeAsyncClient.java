@@ -647,10 +647,14 @@ public class DefaultClaudeAsyncClient implements ClaudeAsyncClient {
 	 * {@link ExitReporter#exitError} describes; {@link #close()} ends that wait.
 	 */
 	private void endStream() {
-		StreamEnd end = new StreamEnd(exitReporter.exitError(transportRef.get()));
+		StreamingTransport transport = transportRef.get();
+		StreamEnd end = new StreamEnd(exitReporter.exitError(transport));
 		if (!streamEnd.compareAndSet(null, end)) {
 			return;
 		}
+		// No reply can come any more: fail the requests waiting for one now instead of
+		// letting them wait out the timeout.
+		failPendingResponses(ExitReporter.noReplyError(end.error(), transport));
 		if (end.error() != null) {
 			logger.debug("CLI exited with code {} — failing the readers", end.error().getExitCode());
 		}
@@ -659,6 +663,18 @@ public class DefaultClaudeAsyncClient implements ClaudeAsyncClient {
 		}
 		end.terminate(currentTurnSink.getAndSet(null));
 		end.terminate(rawMessageSink);
+	}
+
+	private void failPendingResponses(TransportException error) {
+		// Each entry is removed before it is failed, so a request registered meanwhile is
+		// neither failed twice nor dropped without an answer.
+		for (String id : pendingResponses.keySet()) {
+			Sinks.One<Map<String, Object>> sink = pendingResponses.remove(id);
+			if (sink != null) {
+				logger.debug("Failing pending control request {}: {}", id, error.getMessage());
+				sink.tryEmitError(error);
+			}
+		}
 	}
 
 	/**
@@ -881,8 +897,7 @@ public class DefaultClaudeAsyncClient implements ClaudeAsyncClient {
 
 		// Fail pending requests now, so a connect awaiting initialize is released
 		// instead of waiting out the timeout
-		pendingResponses.values().forEach(sink -> sink.tryEmitError(new TransportException("Client closed")));
-		pendingResponses.clear();
+		failPendingResponses(new TransportException("Client closed"));
 	}
 
 	// ========================================================================

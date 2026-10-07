@@ -597,9 +597,7 @@ class CliExitStatusTest {
 			.build()) {
 			long start = System.nanoTime();
 
-			assertThatThrownBy(client::connect).isInstanceOf(TransportException.class)
-				.cause()
-				.isInstanceOfSatisfying(ResultException.class, e -> {
+			assertThatThrownBy(client::connect).isInstanceOfSatisfying(ResultException.class, e -> {
 					assertThat(e.getExitCode()).isEqualTo(1);
 					assertThat(e).hasMessageContaining("No conversation found with session ID: gone");
 				});

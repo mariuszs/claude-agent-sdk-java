@@ -29,10 +29,12 @@ import java.util.concurrent.TimeUnit;
 
 import io.github.markpollack.claude.agent.sdk.exceptions.ResultException;
 import io.github.markpollack.claude.agent.sdk.exceptions.TransportException;
+import io.github.markpollack.claude.agent.sdk.hooks.HookRegistry;
 import io.github.markpollack.claude.agent.sdk.parsing.ParsedMessage;
 import io.github.markpollack.claude.agent.sdk.types.Message;
 import io.github.markpollack.claude.agent.sdk.types.ResultMessage;
 import io.github.markpollack.claude.agent.sdk.types.SystemMessage;
+import io.github.markpollack.claude.agent.sdk.types.control.HookOutput;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -382,6 +384,66 @@ class AsyncCliExitStatusTest {
 		collect(client.connect("hello").messages(), received);
 
 		assertThat(received).hasSize(2).last().isInstanceOf(ResultMessage.class);
+	}
+
+	@Test
+	@DisplayName("a control request pending when the CLI exits fails at once with the exit status and stderr")
+	void pendingControlRequestFailsWithTheExitStatus() throws Exception {
+		client = newClient(stubCli("""
+				read -r request
+				echo 'Error: no model switch for you' >&2
+				exit 3
+				"""));
+		client.connect().block(TIMEOUT);
+		long start = System.nanoTime();
+
+		assertThatThrownBy(() -> client.setModel("stub-model").block(TIMEOUT))
+			.isInstanceOfSatisfying(TransportException.class, e -> {
+				assertThat(e.getExitCode()).isEqualTo(3);
+				assertThat(e.getStderr()).isEqualTo("Error: no model switch for you");
+			});
+		assertThat(Duration.ofNanos(System.nanoTime() - start)).isLessThan(Duration.ofSeconds(5));
+	}
+
+	@Test
+	@DisplayName("a control request pending when the CLI's output ends normally fails at once")
+	void pendingControlRequestFailsOnAZeroExit() throws Exception {
+		client = newClient(stubCli("""
+				read -r request
+				exit 0
+				"""));
+		client.connect().block(TIMEOUT);
+		long start = System.nanoTime();
+
+		assertThatThrownBy(() -> client.interrupt().block(TIMEOUT)).isInstanceOfSatisfying(TransportException.class,
+				e -> {
+					assertThat(e.getExitCode()).isZero();
+					assertThat(e).hasMessageStartingWith("Claude CLI output ended before it replied");
+				});
+		assertThat(Duration.ofNanos(System.nanoTime() - start)).isLessThan(Duration.ofSeconds(5));
+	}
+
+	@Test
+	@DisplayName("an initialize pending when the CLI reports an error result and exits fails connect() with that result")
+	void pendingInitializeFailsWithTheErrorResult() throws Exception {
+		String cli = stubCli("""
+				read -r initialize
+				echo '%s'
+				exit 1
+				""".formatted(ERROR_RESULT));
+		HookRegistry hooks = new HookRegistry();
+		hooks.registerPreToolUse("Bash", input -> HookOutput.allow());
+		client = ClaudeClient.async()
+			.workingDirectory(tempDir)
+			.claudePath(cli)
+			.hookRegistry(hooks)
+			.timeout(TIMEOUT)
+			.build();
+		long start = System.nanoTime();
+
+		assertThatThrownBy(() -> client.connect().block(TIMEOUT)).isInstanceOf(TransportException.class)
+			.satisfies(e -> assertThat(e).hasMessageContaining("Reached maximum number of turns (60)"));
+		assertThat(Duration.ofNanos(System.nanoTime() - start)).isLessThan(Duration.ofSeconds(5));
 	}
 
 	// ---------------------------------------------------------------- helpers
