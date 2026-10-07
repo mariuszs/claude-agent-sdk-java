@@ -19,6 +19,7 @@ package io.github.markpollack.claude.agent.sdk.types;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -43,7 +44,17 @@ public record ResultMessage(@JsonProperty("subtype") String subtype,
 
 		@JsonProperty("result") String result,
 
-		@JsonProperty("structured_output") Object structuredOutput) implements Message {
+		@JsonProperty("structured_output") Object structuredOutput,
+
+		@JsonProperty("errors") List<String> errors) implements Message {
+
+	/**
+	 * Normalizes {@code errors}: a missing list becomes empty, and the list is
+	 * unmodifiable.
+	 */
+	public ResultMessage {
+		errors = errors != null ? List.copyOf(errors) : List.of();
+	}
 
 	@Override
 	public String getType() {
@@ -179,6 +190,8 @@ public record ResultMessage(@JsonProperty("subtype") String subtype,
 
 		private Object structuredOutput;
 
+		private List<String> errors;
+
 		public Builder subtype(String subtype) {
 			this.subtype = subtype;
 			return this;
@@ -229,9 +242,14 @@ public record ResultMessage(@JsonProperty("subtype") String subtype,
 			return this;
 		}
 
+		public Builder errors(List<String> errors) {
+			this.errors = errors;
+			return this;
+		}
+
 		public ResultMessage build() {
 			return new ResultMessage(subtype, durationMs, durationApiMs, isError, numTurns, sessionId, totalCostUsd,
-					usage, result, structuredOutput);
+					usage, result, structuredOutput, errors);
 		}
 
 	}

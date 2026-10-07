@@ -60,7 +60,7 @@ class MessageParserTest {
 		 * you add a field to ResultMessage, you MUST add an assertion here.
 		 *
 		 * ResultMessage fields: subtype, durationMs, durationApiMs, isError, numTurns,
-		 * sessionId, totalCostUsd, usage, result, structuredOutput
+		 * sessionId, totalCostUsd, usage, result, structuredOutput, errors
 		 */
 		@Test
 		@DisplayName("should parse ALL fields in ResultMessage (field parity test)")
@@ -80,7 +80,8 @@ class MessageParserTest {
 							"output_tokens": 200
 						},
 						"result": "final result text",
-						"structured_output": {"key": "value"}
+						"structured_output": {"key": "value"},
+						"errors": ["first error", "second error"]
 					}
 					""";
 
@@ -101,6 +102,26 @@ class MessageParserTest {
 			assertThat(result.result()).isEqualTo("final result text");
 			assertThat(result.structuredOutput()).isNotNull();
 			assertThat(result.getStructuredOutputAsMap()).containsEntry("key", "value");
+			assertThat(result.errors()).containsExactly("first error", "second error");
+		}
+
+		@Test
+		@DisplayName("should read errors given as a bare string, and drop blank and non-string entries")
+		void shouldNormalizeResultErrors() throws Exception {
+			String bare = """
+					{"type": "result", "subtype": "error_during_execution", "is_error": true, "errors": " boom "}
+					""";
+			String mixed = """
+					{"type": "result", "subtype": "error_during_execution", "is_error": true,
+					 "errors": ["  one  ", "", "   ", 42, null, "two"]}
+					""";
+			String missing = """
+					{"type": "result", "subtype": "success", "is_error": false}
+					""";
+
+			assertThat(((ResultMessage) parser.parseMessage(bare)).errors()).containsExactly("boom");
+			assertThat(((ResultMessage) parser.parseMessage(mixed)).errors()).containsExactly("one", "two");
+			assertThat(((ResultMessage) parser.parseMessage(missing)).errors()).isEmpty();
 		}
 
 		@Test

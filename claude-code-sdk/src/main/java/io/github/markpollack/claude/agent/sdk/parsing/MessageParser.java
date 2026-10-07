@@ -146,7 +146,26 @@ public class MessageParser {
 			.usage(parseUsageMap(node.get("usage")))
 			.result(getStringField(node, "result"))
 			.structuredOutput(parseStructuredOutput(node.get("structured_output")))
+			.errors(parseResultErrors(node.get("errors")))
 			.build();
+	}
+
+	/**
+	 * Reads a result's {@code errors}: a list of strings, or a bare string from older
+	 * CLIs. Non-string and blank entries are dropped, and the rest trimmed.
+	 */
+	private List<String> parseResultErrors(JsonNode node) {
+		List<String> errors = new ArrayList<>();
+		if (node == null) {
+			return errors;
+		}
+		Iterable<JsonNode> entries = node.isArray() ? node : List.of(node);
+		for (JsonNode entry : entries) {
+			if (entry.isTextual() && !entry.asText().isBlank()) {
+				errors.add(entry.asText().strip());
+			}
+		}
+		return errors;
 	}
 
 	private Object parseStructuredOutput(JsonNode node) {

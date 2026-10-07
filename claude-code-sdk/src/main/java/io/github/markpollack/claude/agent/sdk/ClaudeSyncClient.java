@@ -105,13 +105,21 @@ public interface ClaudeSyncClient extends AutoCloseable {
 	 * indefinitely until the session ends.
 	 *
 	 * <p>
-	 * If the CLI's output ends before the current turn's {@code ResultMessage} and the
-	 * CLI exited with a non-zero status, {@code hasNext()} throws a
+	 * If the CLI's output ends and the CLI exited with a non-zero status, {@code hasNext()}
+	 * throws a
 	 * {@link io.github.markpollack.claude.agent.sdk.exceptions.TransportException} whose
 	 * {@code getExitCode()} holds that status and whose {@code getStderr()} holds the
 	 * CLI's last stderr lines. A zero exit ends the iteration as usual. When the output
-	 * ends before the result, {@code hasNext()} waits for the CLI to exit, without a time
-	 * limit; {@link #close()} ends that wait.
+	 * ends before the current turn's {@code ResultMessage}, {@code hasNext()} waits for
+	 * the CLI to exit, without a time limit; {@link #close()} ends that wait. After the
+	 * result, a CLI that does not exit within a few seconds ends the iteration as usual.
+	 * </p>
+	 *
+	 * <p>
+	 * An exit after a result whose {@code isError()} is true throws a
+	 * {@link io.github.markpollack.claude.agent.sdk.exceptions.ResultException} carrying
+	 * that result: the CLI ends a failed run (for example {@code error_max_turns}) that
+	 * way on purpose.
 	 * </p>
 	 * @return iterator over parsed messages
 	 */
@@ -125,7 +133,9 @@ public interface ClaudeSyncClient extends AutoCloseable {
 	 * If the CLI exits with a non-zero status before the ResultMessage, {@code hasNext()}
 	 * throws a
 	 * {@link io.github.markpollack.claude.agent.sdk.exceptions.TransportException}
-	 * carrying the exit status, as described for {@link #receiveMessages()}.
+	 * carrying the exit status, as described for {@link #receiveMessages()}. An exit after
+	 * the ResultMessage does not fail this iteration, which ends at the result; the next
+	 * iteration throws it instead.
 	 * </p>
 	 * @return iterator over parsed messages, stops after ResultMessage
 	 */
