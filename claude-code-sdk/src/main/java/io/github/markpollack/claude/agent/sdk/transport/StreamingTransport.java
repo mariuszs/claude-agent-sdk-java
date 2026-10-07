@@ -22,6 +22,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import io.github.markpollack.claude.agent.sdk.config.ClaudeCliDiscovery;
 import io.github.markpollack.claude.agent.sdk.config.PermissionMode;
+import io.github.markpollack.claude.agent.sdk.exceptions.CLINotFoundException;
 import io.github.markpollack.claude.agent.sdk.exceptions.ClaudeSDKException;
 import io.github.markpollack.claude.agent.sdk.exceptions.SessionClosedException;
 import io.github.markpollack.claude.agent.sdk.exceptions.TransportException;
@@ -109,6 +110,9 @@ public class StreamingTransport implements AutoCloseable {
 	private final Path workingDirectory;
 
 	private final Duration defaultTimeout;
+
+	/** Why auto-discovery found no CLI, or null if it found one or was not used. */
+	private String discoveryFailure;
 
 	/** Parser is re-created per session to respect maxBufferSize from options. */
 	private ControlMessageParser parser;
@@ -235,6 +239,7 @@ public class StreamingTransport implements AutoCloseable {
 		}
 		catch (Exception e) {
 			logger.warn("Could not discover Claude CLI path, using 'claude'", e);
+			this.discoveryFailure = e.getMessage();
 			return "claude";
 		}
 	}
@@ -358,7 +363,12 @@ public class StreamingTransport implements AutoCloseable {
 			ProcessBuilder pb = new ProcessBuilder(command);
 			pb.directory(workingDirectory.toFile());
 			pb.environment().putAll(env);
-			process = pb.start();
+			try {
+				process = pb.start();
+			}
+			catch (IOException e) {
+				throw cannotStart(command.get(0), e);
+			}
 
 			// Setup streams
 			stdinWriter = new BufferedWriter(new OutputStreamWriter(process.getOutputStream(), StandardCharsets.UTF_8));
@@ -402,6 +412,52 @@ public class StreamingTransport implements AutoCloseable {
 			}
 			throw new TransportException("Failed to start bidirectional session", e);
 		}
+	}
+
+	/**
+	 * Describes why the CLI process could not be started, naming the program. A program
+	 * that does not exist or is not executable yields a {@link CLINotFoundException}.
+	 * @param program the program that was run, a path or a command name
+	 * @param e the failure from {@link ProcessBuilder#start()}
+	 * @return the exception to throw
+	 */
+	private TransportException cannotStart(String program, IOException e) {
+		if (program.contains(File.separator)) {
+			// A relative path is resolved against the directory the CLI starts in
+			Path path = workingDirectory.resolve(program);
+			if (!Files.exists(path)) {
+				return new CLINotFoundException("Claude CLI not found: " + program, e);
+			}
+			if (Files.isDirectory(path) || !Files.isExecutable(path)) {
+				return new CLINotFoundException("Claude CLI is not executable: " + program, e);
+			}
+		}
+		else if (!isOnPath(program)) {
+			String message = discoveryFailure != null ? discoveryFailure : "Claude CLI not found on PATH: " + program;
+			return new CLINotFoundException(message, e);
+		}
+		if (!Files.isDirectory(workingDirectory)) {
+			return new TransportException("Cannot start the Claude CLI " + program
+					+ ": the working directory does not exist: " + workingDirectory, e);
+		}
+		Throwable reason = e;
+		while (reason.getCause() != null) {
+			reason = reason.getCause();
+		}
+		return new TransportException("Cannot start the Claude CLI " + program + ": " + reason.getMessage(), e);
+	}
+
+	private static boolean isOnPath(String command) {
+		String path = System.getenv("PATH");
+		if (path == null) {
+			return false;
+		}
+		for (String dir : path.split(File.pathSeparator)) {
+			if (!dir.isEmpty() && Files.isExecutable(Path.of(dir, command))) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	/**

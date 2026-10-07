@@ -222,6 +222,11 @@ public class DefaultClaudeSyncClient implements ClaudeSyncClient {
 				logger.info("Client connected without an initial prompt");
 			}
 		}
+		catch (TransportException e) {
+			// Already says what failed, e.g. a CLI that cannot be started
+			cleanup();
+			throw e;
+		}
 		catch (Exception e) {
 			cleanup();
 			throw new TransportException("Failed to connect client", e);
