@@ -45,6 +45,7 @@ import org.junit.jupiter.api.io.TempDir;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.catchThrowableOfType;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 
 /**
  * How {@link ClaudeSyncClient} reports a CLI that exits before the current turn's
@@ -431,6 +432,58 @@ class CliExitStatusTest {
 			client.connectAndReceive("hello").forEach(received::add);
 
 			assertThat(received).hasSize(2).last().isInstanceOf(ResultMessage.class);
+		}
+	}
+
+	@Test
+	@DisplayName("a read after the stream ended ends at once instead of waiting")
+	void readAfterTheEndEndsAtOnce() throws Exception {
+		String cli = stubCli("""
+				read -r prompt
+				echo '%s'
+				exit 0
+				""".formatted(INIT));
+
+		try (ClaudeSyncClient client = newClient(cli)) {
+			client.connect("hello");
+			drain(client.receiveResponse(), new ArrayList<>());
+
+			MessageReceiver receiver = client.responseReceiver();
+			while (receiver.next() != null) {
+				// drain this receiver's own copy of the messages
+			}
+
+			List<Message> again = new ArrayList<>();
+			assertTimeoutPreemptively(Duration.ofSeconds(2), () -> {
+				drain(client.receiveResponse(), again);
+				assertThat(client.responseReceiver().next()).isNull();
+			});
+			assertThat(again).isEmpty();
+		}
+	}
+
+	@Test
+	@DisplayName("a read after a failed stream throws the same error again")
+	void readAfterAFailedEndFailsAgain() throws Exception {
+		String cli = stubCli("""
+				read -r prompt
+				echo '%s'
+				exit 3
+				""".formatted(INIT));
+
+		try (ClaudeSyncClient client = newClient(cli)) {
+			client.connect("hello");
+			TransportException first = catchThrowableOfType(TransportException.class,
+					() -> drain(client.receiveResponse(), new ArrayList<>()));
+			assertThat(first).isNotNull();
+			MessageReceiver receiver = client.responseReceiver();
+			assertThat(receiver.next()).isNotNull();
+			assertThatThrownBy(receiver::next).isSameAs(first);
+
+			assertTimeoutPreemptively(Duration.ofSeconds(2), () -> {
+				assertThatThrownBy(() -> drain(client.receiveResponse(), new ArrayList<>())).isSameAs(first);
+				assertThatThrownBy(() -> client.responseReceiver().next()).isSameAs(first);
+			});
 		}
 	}
 

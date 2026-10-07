@@ -26,6 +26,7 @@ import io.github.markpollack.claude.agent.sdk.types.AssistantMessage;
 import io.github.markpollack.claude.agent.sdk.types.TextBlock;
 import io.github.markpollack.claude.agent.sdk.types.UserMessage;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.NoSuchElementException;
@@ -37,6 +38,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 
 /**
  * Tests for MessageStreamIterator - buffering, completion, and thread-safety.
@@ -170,6 +172,26 @@ class MessageStreamIteratorTest {
 			assertThatThrownBy(() -> iterator.hasNext()).isInstanceOf(MessageStreamIterator.StreamException.class)
 				.hasMessageContaining("Stream failed")
 				.hasCauseInstanceOf(RuntimeException.class);
+		}
+
+		@Test
+		@DisplayName("hasNext() keeps returning false after the end, without waiting")
+		void staysEndedAfterTheEnd() {
+			iterator.complete();
+			assertThat(iterator.hasNext()).isFalse();
+
+			assertTimeoutPreemptively(Duration.ofSeconds(1), () -> assertThat(iterator.hasNext()).isFalse());
+		}
+
+		@Test
+		@DisplayName("hasNext() throws the stream's error again on every later call")
+		void failsAgainAfterAFailedEnd() {
+			RuntimeException cause = new RuntimeException("Test error");
+			iterator.completeWithError(cause);
+			assertThatThrownBy(() -> iterator.hasNext()).hasCause(cause);
+
+			assertTimeoutPreemptively(Duration.ofSeconds(1),
+					() -> assertThatThrownBy(() -> iterator.hasNext()).hasCause(cause));
 		}
 
 		@Test

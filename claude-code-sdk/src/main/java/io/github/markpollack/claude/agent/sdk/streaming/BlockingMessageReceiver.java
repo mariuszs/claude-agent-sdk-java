@@ -60,6 +60,11 @@ public class BlockingMessageReceiver implements MessageReceiver {
 
 	private final AtomicReference<Throwable> error = new AtomicReference<>();
 
+	// Set once END_OF_STREAM has been taken from the queue. The sentinel is offered only
+	// once, so every later next() must end, or fail, from this flag instead of blocking on
+	// a sentinel that never comes again.
+	private volatile boolean ended = false;
+
 	/**
 	 * Creates a receiver with default queue capacity (1000 messages).
 	 */
@@ -114,24 +119,35 @@ public class BlockingMessageReceiver implements MessageReceiver {
 		if (closed.get()) {
 			return null;
 		}
+		if (ended) {
+			return endOfStream();
+		}
 
 		// Block indefinitely until a message is available
 		ParsedMessage message = queue.take();
 
 		// Check for end-of-stream sentinel
 		if (message == END_OF_STREAM) {
-			// Check for error
-			Throwable err = error.get();
-			if (err != null) {
-				if (err instanceof ClaudeSDKException sdkException) {
-					throw sdkException;
-				}
-				throw new TransportException("Stream failed", err);
-			}
-			return null;
+			ended = true;
+			return endOfStream();
 		}
 
 		return message;
+	}
+
+	/**
+	 * Ends the stream: returns {@code null}, or throws the error the stream failed with,
+	 * on this call and on every later one.
+	 */
+	private ParsedMessage endOfStream() throws ClaudeSDKException {
+		Throwable err = error.get();
+		if (err != null) {
+			if (err instanceof ClaudeSDKException sdkException) {
+				throw sdkException;
+			}
+			throw new TransportException("Stream failed", err);
+		}
+		return null;
 	}
 
 	@Override
