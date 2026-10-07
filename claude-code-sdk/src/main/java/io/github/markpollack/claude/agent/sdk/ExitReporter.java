@@ -108,4 +108,22 @@ final class ExitReporter {
 				stderr);
 	}
 
+	/**
+	 * The error for the control requests still waiting for a reply once the CLI's output
+	 * has ended: no reply can come. The exit error says why when there is one; otherwise
+	 * the error says the output ended, with the exit status when it is known.
+	 * @param exitError the error {@link #exitError(StreamingTransport)} gave, or
+	 * {@code null}
+	 * @param transport the transport whose output ended, or {@code null}
+	 * @return the error to fail the pending requests with
+	 */
+	static TransportException noReplyError(TransportException exitError, StreamingTransport transport) {
+		if (exitError != null) {
+			return exitError;
+		}
+		String tail = transport != null ? transport.getStderrTail() : "";
+		return new TransportException("Claude CLI output ended before it replied",
+				transport != null ? transport.getExitCode() : null, tail.isEmpty() ? null : tail);
+	}
+
 }

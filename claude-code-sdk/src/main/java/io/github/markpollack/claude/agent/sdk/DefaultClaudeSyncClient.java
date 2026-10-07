@@ -449,6 +449,9 @@ public class DefaultClaudeSyncClient implements ClaudeSyncClient {
 		// Detect session-end signal from transport (process exited, stream closed)
 		if (message instanceof ParsedMessage.EndOfStream) {
 			TransportException exitError = exitReporter.exitError(transport);
+			// No reply can come any more: fail the requests waiting for one now
+			// instead of letting them wait out the timeout.
+			dismissPendingResponses(ExitReporter.noReplyError(exitError, transport));
 			if (exitError != null) {
 				logger.debug("CLI exited with code {} — failing message receivers", exitError.getExitCode());
 				if (messageIterator != null) {
@@ -695,15 +698,19 @@ public class DefaultClaudeSyncClient implements ClaudeSyncClient {
 		if (transport != null) {
 			transport.close();
 		}
-		dismissPendingResponses();
+		dismissPendingResponses(new ClaudeSDKException("Client closed while request was pending"));
 	}
 
-	private void dismissPendingResponses() {
-		pendingResponses.forEach((id, sink) -> {
-			logger.warn("Abruptly terminating pending request: {}", id);
-			sink.error(new ClaudeSDKException("Client closed while request was pending"));
-		});
-		pendingResponses.clear();
+	private void dismissPendingResponses(ClaudeSDKException error) {
+		// Each entry is removed before it is failed, so a request registered meanwhile is
+		// neither failed twice nor dropped without an answer.
+		for (String id : pendingResponses.keySet()) {
+			MonoSink<Map<String, Object>> sink = pendingResponses.remove(id);
+			if (sink != null) {
+				logger.warn("Abruptly terminating pending request {}: {}", id, error.getMessage());
+				sink.error(error);
+			}
+		}
 	}
 
 	/**
