@@ -1,0 +1,7 @@
+# JitPack builds this fork's release tags, e.g. 1.7.0-mariuszs.1. The SDK needs JDK 21;
+# JitPack defaults to Java 8. The release profile (gpg signing, Central publishing) stays
+# off: JitPack serves what `install` leaves in the local repository.
+jdk:
+  - openjdk21
+install:
+  - ./mvnw -B install -DskipTests
