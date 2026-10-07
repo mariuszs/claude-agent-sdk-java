@@ -184,7 +184,11 @@ public class StreamingTransport implements AutoCloseable {
 	// Exit Status
 	// ============================================================
 
-	/** How long the CLI gets to exit once its stdout has ended. */
+	/**
+	 * How long the CLI gets to exit once its stdout has ended, before the end of the
+	 * stream is signalled. A caller still waiting for output waits longer, through
+	 * {@link #awaitExitCode()}.
+	 */
 	private static final Duration EXIT_GRACE = Duration.ofSeconds(5);
 
 	/** How long the stderr reader gets to drain once the CLI has exited. */
@@ -195,6 +199,13 @@ public class StreamingTransport implements AutoCloseable {
 
 	/** The CLI's exit status, once its output has ended on its own. */
 	private volatile Integer exitCode;
+
+	/**
+	 * Set when close() or closeGracefully() starts. Unlike {@link #isClosing}, which the
+	 * reader also sets once the CLI's stdout ends, it means the transport is ending the
+	 * CLI itself, so the CLI's exit status is ours and not reported.
+	 */
+	private volatile boolean closeRequested = false;
 
 	/** The CLI's last stderr lines, oldest first. Guarded by itself. */
 	private final Deque<String> stderrTail = new ArrayDeque<>();
@@ -886,9 +897,8 @@ public class StreamingTransport implements AutoCloseable {
 
 	/**
 	 * Waits, within {@link #EXIT_GRACE}, for the CLI to exit after its stdout ended, and
-	 * records its exit status. Then gives the stderr reader {@link #STDERR_DRAIN_GRACE}
-	 * to take in what the CLI wrote last. A CLI still running after the grace period
-	 * leaves the exit status unknown.
+	 * records its exit status. A CLI still running after the grace period leaves the exit
+	 * status unknown, for {@link #awaitExitCode()} to wait for.
 	 */
 	private void awaitExit() {
 		Process proc = process;
@@ -900,15 +910,58 @@ public class StreamingTransport implements AutoCloseable {
 				logger.debug("CLI stdout ended but the process is still running after {}", EXIT_GRACE);
 				return;
 			}
-			if (!stderrDrained.await(STDERR_DRAIN_GRACE.toMillis(), TimeUnit.MILLISECONDS)) {
-				logger.debug("CLI stderr still open {} after the process exited", STDERR_DRAIN_GRACE);
-			}
-			exitCode = proc.exitValue();
-			logger.debug("CLI process exited with code {}", exitCode);
+			recordExit(proc);
 		}
 		catch (InterruptedException e) {
 			Thread.currentThread().interrupt();
 		}
+	}
+
+	/**
+	 * Waits, without a time limit, for the CLI to exit after its stdout ended on its own,
+	 * and returns its exit status. Meant for a caller that still expects output the CLI
+	 * never sent, such as a turn's result: the output is over, so the CLI can only exit
+	 * or hang, and a hang should stay visible rather than pass for a normal end.
+	 *
+	 * <p>
+	 * {@link #close()} ends the wait, since it terminates the CLI, and so does
+	 * interrupting the waiting thread.
+	 * </p>
+	 * @return the exit status, as {@link #getExitCode()} reports it, or {@code null} if
+	 * the transport closed the CLI, never started it, or the wait was interrupted
+	 */
+	public Integer awaitExitCode() {
+		Integer code = exitCode;
+		Process proc = process;
+		if (code != null || proc == null || closeRequested) {
+			return code;
+		}
+		try {
+			logger.debug("Waiting for the CLI to exit after its output ended");
+			proc.waitFor();
+			recordExit(proc);
+		}
+		catch (InterruptedException e) {
+			Thread.currentThread().interrupt();
+		}
+		return exitCode;
+	}
+
+	/**
+	 * Records the exit status of a CLI that has exited, unless the transport ended it
+	 * itself. First gives the stderr reader {@link #STDERR_DRAIN_GRACE} to take in what
+	 * the CLI wrote last.
+	 */
+	private void recordExit(Process proc) throws InterruptedException {
+		if (!stderrDrained.await(STDERR_DRAIN_GRACE.toMillis(), TimeUnit.MILLISECONDS)) {
+			logger.debug("CLI stderr still open {} after the process exited", STDERR_DRAIN_GRACE);
+		}
+		if (closeRequested) {
+			logger.debug("CLI process exited because the transport closed it");
+			return;
+		}
+		exitCode = proc.exitValue();
+		logger.debug("CLI process exited with code {}", exitCode);
 	}
 
 	/**
@@ -939,7 +992,9 @@ public class StreamingTransport implements AutoCloseable {
 	private void readStderr() {
 		try {
 			String line;
-			while (!isClosing && (line = stderrReader.readLine()) != null) {
+			// Keeps reading after the CLI's stdout ends on its own, until stderr ends too:
+			// what the CLI writes last, on its way out, explains why it exits.
+			while (!closeRequested && (line = stderrReader.readLine()) != null) {
 				synchronized (stderrTail) {
 					if (stderrTail.size() == STDERR_TAIL_LINES) {
 						stderrTail.removeFirst();
@@ -956,7 +1011,7 @@ public class StreamingTransport implements AutoCloseable {
 			}
 		}
 		catch (IOException e) {
-			if (!isClosing) {
+			if (!closeRequested) {
 				logger.debug("Error reading stderr", e);
 			}
 		}
@@ -1165,7 +1220,8 @@ public class StreamingTransport implements AutoCloseable {
 	 * Gets the CLI's exit status once its output has ended on its own.
 	 * @return the exit status (128 plus the signal number for a process killed by a
 	 * signal), or {@code null} while the CLI runs, when the transport closed it, or when
-	 * it did not exit within a few seconds of ending its output
+	 * it did not exit within a few seconds of ending its output and nothing has waited
+	 * for it since through {@link #awaitExitCode()}
 	 */
 	public Integer getExitCode() {
 		return exitCode;
@@ -1211,6 +1267,7 @@ public class StreamingTransport implements AutoCloseable {
 	public Mono<Void> closeGracefully() {
 		return Mono.fromRunnable(() -> {
 			// Set isClosing first for immediate visibility to read loops (MCP pattern)
+			closeRequested = true;
 			isClosing = true;
 			logger.debug("closeGracefully called, setting isClosing=true");
 
@@ -1264,6 +1321,7 @@ public class StreamingTransport implements AutoCloseable {
 		}
 
 		// Set isClosing first for immediate visibility to read loops (MCP pattern)
+		closeRequested = true;
 		isClosing = true;
 		logger.debug("close() called, setting isClosing=true, currentState={}", getStateName(currentState));
 		state.set(STATE_CLOSING);

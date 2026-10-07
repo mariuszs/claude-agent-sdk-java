@@ -109,7 +109,9 @@ public interface ClaudeSyncClient extends AutoCloseable {
 	 * CLI exited with a non-zero status, {@code hasNext()} throws a
 	 * {@link io.github.markpollack.claude.agent.sdk.exceptions.TransportException} whose
 	 * {@code getExitCode()} holds that status and whose {@code getStderr()} holds the
-	 * CLI's last stderr lines. A zero exit ends the iteration as usual.
+	 * CLI's last stderr lines. A zero exit ends the iteration as usual. When the output
+	 * ends before the result, {@code hasNext()} waits for the CLI to exit, without a time
+	 * limit; {@link #close()} ends that wait.
 	 * </p>
 	 * @return iterator over parsed messages
 	 */
