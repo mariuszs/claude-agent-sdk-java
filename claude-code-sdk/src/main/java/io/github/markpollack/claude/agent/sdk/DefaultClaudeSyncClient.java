@@ -479,12 +479,14 @@ public class DefaultClaudeSyncClient implements ClaudeSyncClient {
 
 	/**
 	 * The error for a CLI whose output ended before the current turn's result, if it
-	 * exited with a non-zero status. A zero or unknown status yields {@code null}, and
-	 * the stream ends as it always has.
+	 * exited with a non-zero status. Waits for the CLI to exit, however long that takes:
+	 * a status that is not known yet would otherwise end the stream as if nothing had
+	 * gone wrong. A zero status, or none because the client was closed, yields
+	 * {@code null}, and the stream ends as it always has.
 	 */
 	private TransportException exitedBeforeResult() {
 		StreamingTransport t = transport;
-		Integer exitCode = t != null ? t.getExitCode() : null;
+		Integer exitCode = t != null ? t.awaitExitCode() : null;
 		if (exitCode == null || exitCode == 0) {
 			return null;
 		}

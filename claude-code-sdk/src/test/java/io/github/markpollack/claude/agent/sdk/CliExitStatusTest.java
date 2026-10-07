@@ -25,6 +25,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
 import io.github.markpollack.claude.agent.sdk.exceptions.CLINotFoundException;
@@ -100,6 +101,60 @@ class CliExitStatusTest {
 			assertThat(error.getStderr()).isEqualTo("Error: something broke");
 			assertThat(error).hasMessageContaining("exit code: 3").hasMessageContaining("Error: something broke");
 		}
+	}
+
+	@Test
+	@DisplayName("a CLI that exits long after its output ended still reports its status and stderr")
+	void slowExitAfterOutputEndedThrows() throws Exception {
+		String cli = stubCli("""
+				read -r prompt
+				echo '%s'
+				exec >&-
+				sleep 7
+				echo 'Error: gave up' >&2
+				exit 3
+				""".formatted(INIT));
+
+		try (ClaudeSyncClient client = newClient(cli)) {
+			client.connect("hello");
+			List<Message> received = new ArrayList<>();
+
+			TransportException error = catchThrowableOfType(TransportException.class,
+					() -> drain(client.receiveResponse(), received));
+
+			assertThat(received).singleElement().isInstanceOf(SystemMessage.class);
+			assertThat(error).isNotNull();
+			assertThat(error.getExitCode()).isEqualTo(3);
+			assertThat(error.getStderr()).isEqualTo("Error: gave up");
+		}
+	}
+
+	@Test
+	@DisplayName("close() ends the wait for a CLI that does not exit after its output ended")
+	void closeEndsTheWaitForAHangingCli() throws Exception {
+		String cli = stubCli("""
+				read -r prompt
+				echo '%s'
+				exec >&-
+				sleep 60
+				""".formatted(INIT));
+
+		ClaudeSyncClient client = newClient(cli);
+		client.connect("hello");
+		CompletableFuture<List<Message>> receiving = CompletableFuture.supplyAsync(() -> {
+			List<Message> received = new ArrayList<>();
+			drain(client.receiveResponse(), received);
+			return received;
+		});
+
+		// Past the grace period in which the stream used to end on its own.
+		Thread.sleep(6_000);
+		assertThat(receiving).isNotDone();
+
+		long start = System.nanoTime();
+		client.close();
+		assertThat(Duration.ofNanos(System.nanoTime() - start)).isLessThan(Duration.ofSeconds(3));
+		assertThat(receiving.get(3, TimeUnit.SECONDS)).singleElement().isInstanceOf(SystemMessage.class);
 	}
 
 	@Test
