@@ -104,6 +104,11 @@ public class DefaultClaudeSyncClient implements ClaudeSyncClient {
 
 	private final AtomicReference<String> currentSessionId = new AtomicReference<>(DEFAULT_SESSION_ID);
 
+	// Whether the current turn still waits for its ResultMessage. A session that has
+	// produced no result yet counts as waiting, so a CLI that fails at startup is
+	// reported too.
+	private final AtomicBoolean resultPending = new AtomicBoolean(true);
+
 	// Runtime state tracking
 	private final AtomicReference<String> currentModel = new AtomicReference<>();
 
@@ -268,6 +273,7 @@ public class DefaultClaudeSyncClient implements ClaudeSyncClient {
 			message.put("session_id", sessionId);
 
 			String json = objectMapper.writeValueAsString(message);
+			resultPending.set(true);
 			transport.sendMessage(json);
 
 			currentSessionId.set(sessionId);
@@ -436,6 +442,18 @@ public class DefaultClaudeSyncClient implements ClaudeSyncClient {
 	private void handleMessage(ParsedMessage message) {
 		// Detect session-end signal from transport (process exited, stream closed)
 		if (message instanceof ParsedMessage.EndOfStream) {
+			TransportException exitError = resultPending.get() ? exitedBeforeResult() : null;
+			if (exitError != null) {
+				logger.debug("CLI exited with code {} before its result — failing message receivers",
+						exitError.getExitCode());
+				if (messageIterator != null) {
+					messageIterator.completeWithError(exitError);
+				}
+				if (blockingReceiver != null) {
+					blockingReceiver.completeWithError(exitError);
+				}
+				return;
+			}
 			logger.debug("Session ended — completing message receivers");
 			if (messageIterator != null) {
 				messageIterator.complete();
@@ -447,9 +465,28 @@ public class DefaultClaudeSyncClient implements ClaudeSyncClient {
 		}
 		// Forward regular messages to both receivers
 		if (message.isRegularMessage()) {
+			if (message.asMessage() instanceof ResultMessage) {
+				resultPending.set(false);
+			}
 			messageIterator.offer(message);
 			blockingReceiver.offer(message);
 		}
+	}
+
+	/**
+	 * The error for a CLI whose output ended before the current turn's result, if it
+	 * exited with a non-zero status. A zero or unknown status yields {@code null}, and
+	 * the stream ends as it always has.
+	 */
+	private TransportException exitedBeforeResult() {
+		StreamingTransport t = transport;
+		Integer exitCode = t != null ? t.getExitCode() : null;
+		if (exitCode == null || exitCode == 0) {
+			return null;
+		}
+		String stderr = t.getStderrTail();
+		return new TransportException("Claude CLI exited before its result", exitCode,
+				stderr.isEmpty() ? null : stderr);
 	}
 
 	private ControlResponse handleControlRequest(ControlRequest request) {

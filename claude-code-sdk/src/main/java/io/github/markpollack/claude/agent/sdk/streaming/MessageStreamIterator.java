@@ -18,6 +18,7 @@ package io.github.markpollack.claude.agent.sdk.streaming;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import io.github.markpollack.claude.agent.sdk.exceptions.ClaudeSDKException;
 import io.github.markpollack.claude.agent.sdk.parsing.ParsedMessage;
 
 import java.util.Iterator;
@@ -128,7 +129,9 @@ public class MessageStreamIterator implements Iterator<ParsedMessage>, Iterable<
 	}
 
 	/**
-	 * Signals that the stream has failed with an error.
+	 * Signals that the stream has failed with an error. {@link #hasNext()} rethrows a
+	 * {@link ClaudeSDKException} as it is and wraps anything else in a
+	 * {@link StreamException}.
 	 * @param throwable the error that caused the failure
 	 */
 	public void completeWithError(Throwable throwable) {
@@ -166,6 +169,9 @@ public class MessageStreamIterator implements Iterator<ParsedMessage>, Iterable<
 					nextMessage = null;
 					// Check for error
 					Throwable err = error.get();
+					if (err instanceof ClaudeSDKException sdkException) {
+						throw sdkException;
+					}
 					if (err != null) {
 						throw new StreamException("Stream failed", err);
 					}

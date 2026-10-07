@@ -43,7 +43,9 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Deque;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
@@ -177,6 +179,28 @@ public class StreamingTransport implements AutoCloseable {
 
 	// Synchronization for stdin writes (belt-and-suspenders with outbound scheduler)
 	private final Object stdinLock = new Object();
+
+	// ============================================================
+	// Exit Status
+	// ============================================================
+
+	/** How long the CLI gets to exit once its stdout has ended. */
+	private static final Duration EXIT_GRACE = Duration.ofSeconds(5);
+
+	/** How long the stderr reader gets to drain once the CLI has exited. */
+	private static final Duration STDERR_DRAIN_GRACE = Duration.ofSeconds(1);
+
+	/** How many of the CLI's last stderr lines are kept for error reporting. */
+	private static final int STDERR_TAIL_LINES = 20;
+
+	/** The CLI's exit status, once its output has ended on its own. */
+	private volatile Integer exitCode;
+
+	/** The CLI's last stderr lines, oldest first. Guarded by itself. */
+	private final Deque<String> stderrTail = new ArrayDeque<>();
+
+	/** Released when the stderr reader has seen the end of the stream. */
+	private volatile CountDownLatch stderrDrained = new CountDownLatch(0);
 
 	// ============================================================
 	// Constructors
@@ -372,6 +396,7 @@ public class StreamingTransport implements AutoCloseable {
 				.schedule(() -> processInboundMessages(messageHandler, controlRequestHandler, controlResponseHandler));
 
 			// Start stderr reader on dedicated scheduler
+			stderrDrained = new CountDownLatch(1);
 			errorScheduler.schedule(this::readStderr);
 
 			// Start outbound message processing
@@ -840,6 +865,11 @@ public class StreamingTransport implements AutoCloseable {
 			}
 		}
 		finally {
+			// The CLI ended its output on its own, not because we closed it: wait for
+			// its exit status before anything treats the session as over.
+			if (!isClosing) {
+				awaitExit();
+			}
 			logger.debug("processInboundMessages finally block, setting isClosing=true");
 			isClosing = true;
 			inboundSink.tryEmitComplete();
@@ -851,6 +881,33 @@ public class StreamingTransport implements AutoCloseable {
 			catch (Exception e) {
 				logger.debug("Error signaling session end to message handler", e);
 			}
+		}
+	}
+
+	/**
+	 * Waits, within {@link #EXIT_GRACE}, for the CLI to exit after its stdout ended, and
+	 * records its exit status. Then gives the stderr reader {@link #STDERR_DRAIN_GRACE}
+	 * to take in what the CLI wrote last. A CLI still running after the grace period
+	 * leaves the exit status unknown.
+	 */
+	private void awaitExit() {
+		Process proc = process;
+		if (proc == null) {
+			return;
+		}
+		try {
+			if (!proc.waitFor(EXIT_GRACE.toMillis(), TimeUnit.MILLISECONDS)) {
+				logger.debug("CLI stdout ended but the process is still running after {}", EXIT_GRACE);
+				return;
+			}
+			if (!stderrDrained.await(STDERR_DRAIN_GRACE.toMillis(), TimeUnit.MILLISECONDS)) {
+				logger.debug("CLI stderr still open {} after the process exited", STDERR_DRAIN_GRACE);
+			}
+			exitCode = proc.exitValue();
+			logger.debug("CLI process exited with code {}", exitCode);
+		}
+		catch (InterruptedException e) {
+			Thread.currentThread().interrupt();
 		}
 	}
 
@@ -883,6 +940,12 @@ public class StreamingTransport implements AutoCloseable {
 		try {
 			String line;
 			while (!isClosing && (line = stderrReader.readLine()) != null) {
+				synchronized (stderrTail) {
+					if (stderrTail.size() == STDERR_TAIL_LINES) {
+						stderrTail.removeFirst();
+					}
+					stderrTail.addLast(line);
+				}
 				// Use custom handler if provided, otherwise log at warn level
 				if (currentStderrHandler != null) {
 					currentStderrHandler.handle(line);
@@ -896,6 +959,9 @@ public class StreamingTransport implements AutoCloseable {
 			if (!isClosing) {
 				logger.debug("Error reading stderr", e);
 			}
+		}
+		finally {
+			stderrDrained.countDown();
 		}
 	}
 
@@ -1093,6 +1159,27 @@ public class StreamingTransport implements AutoCloseable {
 	 */
 	public Throwable getSessionError() {
 		return sessionError.get();
+	}
+
+	/**
+	 * Gets the CLI's exit status once its output has ended on its own.
+	 * @return the exit status (128 plus the signal number for a process killed by a
+	 * signal), or {@code null} while the CLI runs, when the transport closed it, or when
+	 * it did not exit within a few seconds of ending its output
+	 */
+	public Integer getExitCode() {
+		return exitCode;
+	}
+
+	/**
+	 * Gets the last lines the CLI wrote to stderr, at most twenty, whether or not a
+	 * {@link StderrHandler} also received them.
+	 * @return the lines joined by newlines, or an empty string if there were none
+	 */
+	public String getStderrTail() {
+		synchronized (stderrTail) {
+			return String.join("\n", stderrTail);
+		}
 	}
 
 	/**
