@@ -266,6 +266,11 @@ public class DefaultClaudeAsyncClient implements ClaudeAsyncClient {
 
 				sink.success();
 			}
+			catch (TransportException e) {
+				// Already says what failed, e.g. a CLI that cannot be started
+				cleanup();
+				sink.error(e);
+			}
 			catch (Exception e) {
 				cleanup();
 				sink.error(new TransportException("Failed to connect client", e));
