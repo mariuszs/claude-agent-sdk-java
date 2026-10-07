@@ -6,7 +6,7 @@
 
     <groupId>io.github.markpollack</groupId>
     <artifactId>claude-agent-sdk-parent</artifactId>
-    <version>1.7.0-mariuszs.2</version>
+    <version>1.7.0-mariuszs.3</version>
 
     <name>Claude Agent SDK Parent</name>
 
