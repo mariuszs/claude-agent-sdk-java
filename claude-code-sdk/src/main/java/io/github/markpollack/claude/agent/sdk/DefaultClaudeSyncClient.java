@@ -286,6 +286,10 @@ public class DefaultClaudeSyncClient implements ClaudeSyncClient {
 			currentSessionId.set(sessionId);
 			logger.debug("Sent query in session {}: {}", sessionId, prompt.substring(0, Math.min(50, prompt.length())));
 		}
+		catch (TransportException e) {
+			// Already says why, with the CLI's exit status when there is one.
+			throw e;
+		}
 		catch (Exception e) {
 			throw new TransportException("Failed to send query", e);
 		}

@@ -87,6 +87,12 @@ public interface ClaudeSyncClient extends AutoCloseable {
 	/**
 	 * Sends a follow-up query in the existing session context. The query will be
 	 * processed in the context of previous messages.
+	 *
+	 * <p>
+	 * Once the CLI's output has ended, the CLI cannot answer, and this throws a
+	 * {@link io.github.markpollack.claude.agent.sdk.exceptions.TransportException}
+	 * carrying the CLI's exit status and last stderr lines when they are known.
+	 * </p>
 	 * @param prompt the prompt to send
 	 * @throws ClaudeSDKException if sending fails
 	 */

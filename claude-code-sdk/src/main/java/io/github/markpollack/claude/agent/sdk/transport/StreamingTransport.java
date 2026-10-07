@@ -207,6 +207,12 @@ public class StreamingTransport implements AutoCloseable {
 	 */
 	private volatile boolean closeRequested = false;
 
+	/**
+	 * Set once the CLI's stdout has ended on its own and the exit status has been waited
+	 * for. From then on nothing sent reaches a CLI that could answer, so sending fails.
+	 */
+	private volatile boolean outputEnded = false;
+
 	/** The CLI's last stderr lines, oldest first. Guarded by itself. */
 	private final Deque<String> stderrTail = new ArrayDeque<>();
 
@@ -880,6 +886,7 @@ public class StreamingTransport implements AutoCloseable {
 			// its exit status before anything treats the session as over.
 			if (!isClosing) {
 				awaitExit();
+				outputEnded = true;
 			}
 			logger.debug("processInboundMessages finally block, setting isClosing=true");
 			isClosing = true;
@@ -1101,6 +1108,12 @@ public class StreamingTransport implements AutoCloseable {
 				throw new SessionClosedException("Transport is closed");
 			}
 			throw new IllegalStateException("Transport not connected. State: " + getStateName());
+		}
+		if (outputEnded) {
+			// The stdin writer would drop the message without a word: say why instead.
+			String stderr = getStderrTail();
+			throw new TransportException("Cannot send to the Claude CLI: its output has ended", exitCode,
+					stderr.isEmpty() ? null : stderr);
 		}
 	}
 

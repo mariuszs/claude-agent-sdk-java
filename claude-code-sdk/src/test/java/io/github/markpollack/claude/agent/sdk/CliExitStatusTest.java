@@ -292,12 +292,56 @@ class CliExitStatusTest {
 			drain(client.receiveResponse(), first);
 			assertThat(first).last().isInstanceOf(ResultMessage.class);
 
-			client.query("second");
-
-			TransportException error = catchThrowableOfType(TransportException.class,
-					() -> drain(client.receiveResponse(), new ArrayList<>()));
+			// The CLI may or may not have ended by the time query() runs: either query()
+			// refuses, or the next turn's iteration fails. Either way the status is reported.
+			TransportException error = catchThrowableOfType(TransportException.class, () -> {
+				client.query("second");
+				drain(client.receiveResponse(), new ArrayList<>());
+			});
 			assertThat(error).isNotNull();
 			assertThat(error.getExitCode()).isEqualTo(3);
+		}
+	}
+
+	@Test
+	@DisplayName("query() after the CLI's output ended fails with the exit status and stderr")
+	void queryAfterTheCliEndedFails() throws Exception {
+		String cli = stubCli("""
+				read -r prompt
+				echo '%s'
+				echo '%s'
+				echo 'Error: crashed after the turn' >&2
+				exit 3
+				""".formatted(INIT, RESULT));
+
+		try (ClaudeSyncClient client = newClient(cli)) {
+			client.connect("first");
+			catchThrowableOfType(TransportException.class, () -> drain(client.receiveMessages(), new ArrayList<>()));
+
+			assertThatThrownBy(() -> client.query("second")).isInstanceOfSatisfying(TransportException.class, e -> {
+				assertThat(e.getExitCode()).isEqualTo(3);
+				assertThat(e.getStderr()).isEqualTo("Error: crashed after the turn");
+				assertThat(e).hasMessageStartingWith("Cannot send to the Claude CLI: its output has ended");
+			});
+		}
+	}
+
+	@Test
+	@DisplayName("query() after a zero exit fails too")
+	void queryAfterAZeroExitFails() throws Exception {
+		String cli = stubCli("""
+				read -r prompt
+				echo '%s'
+				echo '%s'
+				exit 0
+				""".formatted(INIT, RESULT));
+
+		try (ClaudeSyncClient client = newClient(cli)) {
+			client.connect("first");
+			drain(client.receiveMessages(), new ArrayList<>());
+
+			assertThatThrownBy(() -> client.query("second")).isInstanceOfSatisfying(TransportException.class,
+					e -> assertThat(e.getExitCode()).isZero());
 		}
 	}
 
