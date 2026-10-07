@@ -27,6 +27,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 
+import io.github.markpollack.claude.agent.sdk.exceptions.CLINotFoundException;
 import io.github.markpollack.claude.agent.sdk.exceptions.TransportException;
 import io.github.markpollack.claude.agent.sdk.parsing.ParsedMessage;
 import io.github.markpollack.claude.agent.sdk.streaming.MessageReceiver;
@@ -223,20 +224,15 @@ class CliExitStatusTest {
 	}
 
 	@Test
-	@DisplayName("a missing CLI binary fails connect() without an exit status")
+	@DisplayName("a missing CLI binary fails connect() naming the path, without an exit status")
 	void missingCliFailsConnect() {
 		String missing = tempDir.resolve("no-such-claude").toString();
 
 		try (ClaudeSyncClient client = newClient(missing)) {
-			assertThatThrownBy(() -> client.connect("hello")).isInstanceOfSatisfying(TransportException.class, e -> {
+			assertThatThrownBy(() -> client.connect("hello")).isInstanceOfSatisfying(CLINotFoundException.class, e -> {
 				assertThat(e.getExitCode()).isNull();
 				assertThat(e.getStderr()).isNull();
-				assertThat(e).hasMessage("Failed to connect client")
-					.cause()
-					.hasMessage("Failed to start bidirectional session")
-					.cause()
-					.isInstanceOf(IOException.class)
-					.hasMessageContaining("no-such-claude");
+				assertThat(e).hasMessage("Claude CLI not found: " + missing).hasCauseInstanceOf(IOException.class);
 			});
 		}
 	}
