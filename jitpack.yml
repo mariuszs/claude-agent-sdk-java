@@ -3,5 +3,8 @@
 # off: JitPack serves what `install` leaves in the local repository.
 jdk:
   - openjdk21
+# MAVEN_USER_HOME makes the wrapper download a fresh Maven into the build directory:
+# JitPack's cached copy broke, and 1.7.0-mariuszs.4 failed twice with "Could not find
+# or load main class org.codehaus.plexus.classworlds.launcher.Launcher".
 install:
-  - ./mvnw -B install -DskipTests
+  - MAVEN_USER_HOME=$PWD/.mvn-home ./mvnw -B install -DskipTests
