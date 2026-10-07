@@ -116,6 +116,15 @@ public class DefaultClaudeAsyncClient implements ClaudeAsyncClient {
 	// Transport (set once during connect, read afterward)
 	private final AtomicReference<StreamingTransport> transportRef = new AtomicReference<>();
 
+	// Turns the end of the CLI's output into the error the readers fail with
+	private final ExitReporter exitReporter = new ExitReporter();
+
+	/**
+	 * How the CLI's output ended, or {@code null} while it has not. A read started after
+	 * the end ends the same way at once instead of waiting for messages that cannot come.
+	 */
+	private final AtomicReference<StreamEnd> streamEnd = new AtomicReference<>();
+
 	/**
 	 * Per-turn unicast sink for streaming messages to the current receiveResponse()
 	 * subscriber.
@@ -321,12 +330,17 @@ public class DefaultClaudeAsyncClient implements ClaudeAsyncClient {
 				message.put("session_id", currentSessionId.get());
 
 				String json = objectMapper.writeValueAsString(message);
+				exitReporter.querySent();
 				transportRef.get().sendMessage(json);
 
 				logger.debug("Sent query in session {}: {}", currentSessionId.get(),
 						prompt.substring(0, Math.min(50, prompt.length())));
 
 				sink.success();
+			}
+			catch (TransportException e) {
+				// Already says why, with the CLI's exit status when there is one.
+				sink.error(e);
 			}
 			catch (Exception e) {
 				sink.error(new TransportException("Failed to send query", e));
@@ -393,6 +407,13 @@ public class DefaultClaudeAsyncClient implements ClaudeAsyncClient {
 			if (previous != null) {
 				logger.debug("Completing previous turn sink");
 				previous.tryEmitComplete();
+			}
+
+			// Checked after the swap: either this sees the end, or endStream() sees the
+			// new sink, so a turn subscribed as the output ends cannot wait forever.
+			StreamEnd end = streamEnd.get();
+			if (end != null) {
+				end.terminate(turnSink);
 			}
 
 			return turnSink.asFlux()
@@ -576,6 +597,11 @@ public class DefaultClaudeAsyncClient implements ClaudeAsyncClient {
 	 * @param message the parsed message from the CLI
 	 */
 	private void handleMessage(ParsedMessage message) {
+		if (message instanceof ParsedMessage.EndOfStream) {
+			endStream();
+			return;
+		}
+
 		// Route to raw sink for low-level access
 		if (rawMessageSink != null) {
 			rawMessageSink.tryEmitNext(message);
@@ -584,6 +610,7 @@ public class DefaultClaudeAsyncClient implements ClaudeAsyncClient {
 		// Route regular messages to handlers and turn sink
 		if (message.isRegularMessage()) {
 			Message msg = message.asMessage();
+			exitReporter.messageReceived(msg);
 
 			// Notify cross-turn handlers (session-scoped) before turn sink
 			for (Consumer<Message> handler : messageHandlers) {
@@ -628,6 +655,47 @@ public class DefaultClaudeAsyncClient implements ClaudeAsyncClient {
 				logger.debug("handleMessage: no turn sink active, skipping {}", msg.getClass().getSimpleName());
 			}
 		}
+	}
+
+	/**
+	 * Ends the current turn and {@link #receiveMessages()} once the CLI's output has
+	 * ended: with the CLI's exit error when it exited with a non-zero status, normally
+	 * otherwise. Before the turn's result this waits for the CLI to exit, as
+	 * {@link ExitReporter#exitError} describes; {@link #close()} ends that wait.
+	 */
+	private void endStream() {
+		StreamEnd end = new StreamEnd(exitReporter.exitError(transportRef.get()));
+		if (!streamEnd.compareAndSet(null, end)) {
+			return;
+		}
+		if (end.error() != null) {
+			logger.debug("CLI exited with code {} — failing the readers", end.error().getExitCode());
+		}
+		else {
+			logger.debug("Session ended — completing the readers");
+		}
+		end.terminate(currentTurnSink.getAndSet(null));
+		end.terminate(rawMessageSink);
+	}
+
+	/**
+	 * How the CLI's output ended.
+	 * @param error the CLI's exit error, or {@code null} for a normal end
+	 */
+	private record StreamEnd(TransportException error) {
+
+		void terminate(Sinks.Many<?> sink) {
+			if (sink == null) {
+				return;
+			}
+			if (error != null) {
+				sink.tryEmitError(error);
+			}
+			else {
+				sink.tryEmitComplete();
+			}
+		}
+
 	}
 
 	private ControlResponse handleControlRequest(ControlRequest request) {

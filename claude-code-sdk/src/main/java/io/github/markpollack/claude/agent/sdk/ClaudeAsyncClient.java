@@ -155,6 +155,13 @@ public interface ClaudeAsyncClient {
 		 *     })
 		 *     .subscribe();
 		 * }</pre>
+		 *
+		 * <p>
+		 * A CLI that exits with a non-zero status before the turn's result fails the Flux
+		 * with a {@link io.github.markpollack.claude.agent.sdk.exceptions.TransportException}
+		 * carrying the exit status, as described for {@link ClaudeAsyncClient#receiveResponse()};
+		 * so do {@link #text()} and {@link #textStream()}.
+		 * </p>
 		 * @return Flux of all Message types for this turn
 		 */
 		Flux<Message> messages();
@@ -226,6 +233,12 @@ public interface ClaudeAsyncClient {
 	 * </p>
 	 *
 	 * <p>
+	 * Once the CLI's output has ended, the CLI cannot answer, and the send fails with a
+	 * {@link io.github.markpollack.claude.agent.sdk.exceptions.TransportException}
+	 * carrying the CLI's exit status and last stderr lines when they are known.
+	 * </p>
+	 *
+	 * <p>
 	 * Example:
 	 * </p>
 	 * <pre>{@code
@@ -248,11 +261,16 @@ public interface ClaudeAsyncClient {
 	TurnSpec query(String prompt);
 
 	/**
-	 * Receives response messages from Claude as a reactive stream.
+	 * Receives every message from the CLI, across turns, as a reactive stream.
 	 *
 	 * <p>
-	 * The returned Flux emits messages as they arrive and completes when a
-	 * {@link io.github.markpollack.claude.agent.sdk.types.ResultMessage} is received.
+	 * The returned Flux ends when the CLI's output ends. If the CLI exited with a
+	 * non-zero status, it fails with a
+	 * {@link io.github.markpollack.claude.agent.sdk.exceptions.TransportException} whose
+	 * {@code getExitCode()} holds that status and whose {@code getStderr()} holds the
+	 * CLI's last stderr lines; after a result whose {@code isError()} is true, with a
+	 * {@link io.github.markpollack.claude.agent.sdk.exceptions.ResultException} carrying
+	 * that result. A zero exit completes it.
 	 * </p>
 	 * @return Flux of parsed messages
 	 */
@@ -264,6 +282,17 @@ public interface ClaudeAsyncClient {
 	 * <p>
 	 * This is a convenience method that filters to regular messages and converts them to
 	 * the {@link Message} type.
+	 * </p>
+	 *
+	 * <p>
+	 * The returned Flux completes at the current turn's
+	 * {@link io.github.markpollack.claude.agent.sdk.types.ResultMessage}. If the CLI's
+	 * output ends before it and the CLI exited with a non-zero status, it fails with a
+	 * {@link io.github.markpollack.claude.agent.sdk.exceptions.TransportException}
+	 * carrying the exit status and last stderr lines; it waits for that status without a
+	 * time limit, and {@link #close()} ends the wait. A zero exit completes it. An exit
+	 * after the result does not fail this turn, which ended at the result; a Flux
+	 * subscribed after the output ended ends at once, the same way the output did.
 	 * </p>
 	 * @return Flux of messages
 	 */
