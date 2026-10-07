@@ -103,6 +103,14 @@ public interface ClaudeSyncClient extends AutoCloseable {
 	/**
 	 * Returns an iterator over all messages from the CLI. This iterator yields messages
 	 * indefinitely until the session ends.
+	 *
+	 * <p>
+	 * If the CLI's output ends before the current turn's {@code ResultMessage} and the
+	 * CLI exited with a non-zero status, {@code hasNext()} throws a
+	 * {@link io.github.markpollack.claude.agent.sdk.exceptions.TransportException} whose
+	 * {@code getExitCode()} holds that status and whose {@code getStderr()} holds the
+	 * CLI's last stderr lines. A zero exit ends the iteration as usual.
+	 * </p>
 	 * @return iterator over parsed messages
 	 */
 	Iterator<ParsedMessage> receiveMessages();
@@ -110,6 +118,13 @@ public interface ClaudeSyncClient extends AutoCloseable {
 	/**
 	 * Returns an iterator that yields messages until a ResultMessage is received. This is
 	 * useful for processing a single response before sending another query.
+	 *
+	 * <p>
+	 * If the CLI exits with a non-zero status before the ResultMessage, {@code hasNext()}
+	 * throws a
+	 * {@link io.github.markpollack.claude.agent.sdk.exceptions.TransportException}
+	 * carrying the exit status, as described for {@link #receiveMessages()}.
+	 * </p>
 	 * @return iterator over parsed messages, stops after ResultMessage
 	 */
 	Iterator<ParsedMessage> receiveResponse();
