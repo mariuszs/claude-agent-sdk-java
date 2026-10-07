@@ -41,6 +41,7 @@ import io.github.markpollack.claude.agent.sdk.permission.ToolPermissionContext;
 
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import reactor.core.publisher.SignalType;
 import reactor.core.publisher.Sinks;
 import reactor.core.scheduler.Schedulers;
 
@@ -54,6 +55,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
+import java.util.function.Function;
 
 /**
  * Default implementation of {@link ClaudeAsyncClient} providing reactive multi-turn
@@ -222,18 +224,20 @@ public class DefaultClaudeAsyncClient implements ClaudeAsyncClient {
 
 	@Override
 	public Mono<Void> connect() {
-		return doConnect(null);
+		return doConnect(null, () -> {
+		});
 	}
 
 	@Override
 	public TurnSpec connect(String initialPrompt) {
-		return new DefaultTurnSpec(() -> doConnect(initialPrompt));
+		return new DefaultTurnSpec(openTurn -> doConnect(initialPrompt, openTurn));
 	}
 
 	/**
 	 * Internal connect implementation that returns Mono<Void>.
+	 * @param openTurn run once the client may connect, before the CLI starts
 	 */
-	private Mono<Void> doConnect(String initialPrompt) {
+	private Mono<Void> doConnect(String initialPrompt, Runnable openTurn) {
 		return Mono.<Void>create(sink -> {
 			if (closed.get()) {
 				sink.error(new TransportException("Client has been closed"));
@@ -245,6 +249,8 @@ public class DefaultClaudeAsyncClient implements ClaudeAsyncClient {
 			}
 
 			try {
+				openTurn.run();
+
 				// Create transport
 				StreamingTransport transport = new StreamingTransport(workingDirectory, timeout, claudePath);
 				transportRef.set(transport);
@@ -310,13 +316,14 @@ public class DefaultClaudeAsyncClient implements ClaudeAsyncClient {
 
 	@Override
 	public TurnSpec query(String prompt) {
-		return new DefaultTurnSpec(() -> doQuery(prompt));
+		return new DefaultTurnSpec(openTurn -> doQuery(prompt, openTurn));
 	}
 
 	/**
 	 * Internal query implementation that returns Mono<Void>.
+	 * @param openTurn run once the client may send, before the prompt is sent
 	 */
-	private Mono<Void> doQuery(String prompt) {
+	private Mono<Void> doQuery(String prompt, Runnable openTurn) {
 		return Mono.<Void>create(sink -> {
 			if (!connected.get() || closed.get()) {
 				sink.error(new IllegalStateException("Client is not connected"));
@@ -337,6 +344,7 @@ public class DefaultClaudeAsyncClient implements ClaudeAsyncClient {
 				message.put("session_id", currentSessionId.get());
 
 				String json = objectMapper.writeValueAsString(message);
+				openTurn.run();
 				exitReporter.querySent();
 				transportRef.get().sendMessage(json);
 
@@ -404,35 +412,52 @@ public class DefaultClaudeAsyncClient implements ClaudeAsyncClient {
 			if (!connected.get() || closed.get()) {
 				return Flux.error(new IllegalStateException("Client is not connected"));
 			}
-
-			// Create fresh unicast sink for this turn
-			Sinks.Many<Message> turnSink = Sinks.many().unicast().onBackpressureBuffer();
-			logger.debug("Created new turn sink");
-
-			// Atomically swap in the new sink, completing any previous one
-			Sinks.Many<Message> previous = currentTurnSink.getAndSet(turnSink);
-			if (previous != null) {
-				logger.debug("Completing previous turn sink");
-				previous.tryEmitComplete();
-			}
-
-			// Checked after the swap: either this sees the end, or endStream() sees the
-			// new sink, so a turn subscribed as the output ends cannot wait forever.
-			StreamEnd end = streamEnd.get();
-			if (end != null) {
-				end.terminate(turnSink);
-			}
-
-			return turnSink.asFlux()
-				.doOnNext(msg -> logger.debug("receiveResponse emitting: {}", msg.getClass().getSimpleName()))
-				.doOnComplete(() -> logger.debug("receiveResponse completed"))
-				.doOnCancel(() -> logger.debug("receiveResponse cancelled"))
-				.doFinally(signal -> {
-					// Clear the sink reference when done (success, error, or cancel)
-					currentTurnSink.compareAndSet(turnSink, null);
-					logger.debug("Turn sink cleared (signal={})", signal);
-				});
+			return turnMessages(openTurn());
 		});
+	}
+
+	/**
+	 * Makes a fresh turn sink the one {@link #handleMessage} routes to, completing the
+	 * previous turn. The sink buffers what arrives before its Flux is subscribed, so a
+	 * turn opened before its prompt is sent gets every message of the answer.
+	 */
+	private Sinks.Many<Message> openTurn() {
+		Sinks.Many<Message> turnSink = Sinks.many().unicast().onBackpressureBuffer();
+		logger.debug("Created new turn sink");
+
+		// Atomically swap in the new sink, completing any previous one
+		Sinks.Many<Message> previous = currentTurnSink.getAndSet(turnSink);
+		if (previous != null) {
+			logger.debug("Completing previous turn sink");
+			previous.tryEmitComplete();
+		}
+
+		// Checked after the swap: either this sees the end, or endStream() sees the
+		// new sink, so a turn opened as the output ends cannot wait forever.
+		StreamEnd end = streamEnd.get();
+		if (end != null) {
+			end.terminate(turnSink);
+		}
+		return turnSink;
+	}
+
+	/**
+	 * The messages of a turn {@link #openTurn()} opened; it stops being the current turn
+	 * when the Flux ends.
+	 */
+	private Flux<Message> turnMessages(Sinks.Many<Message> turnSink) {
+		return turnSink.asFlux()
+			.doOnNext(msg -> logger.debug("receiveResponse emitting: {}", msg.getClass().getSimpleName()))
+			.doOnComplete(() -> logger.debug("receiveResponse completed"))
+			.doOnCancel(() -> logger.debug("receiveResponse cancelled"))
+			.doFinally(signal -> closeTurn(turnSink, signal));
+	}
+
+	private void closeTurn(Sinks.Many<Message> turnSink, SignalType signal) {
+		// Clear the sink reference when done (success, error, or cancel)
+		if (currentTurnSink.compareAndSet(turnSink, null)) {
+			logger.debug("Turn sink cleared (signal={})", signal);
+		}
 	}
 
 	@Override
@@ -915,22 +940,21 @@ public class DefaultClaudeAsyncClient implements ClaudeAsyncClient {
 	 */
 	private class DefaultTurnSpec implements TurnSpec {
 
-		private final java.util.function.Supplier<Mono<Void>> sendAction;
+		private final Function<Runnable, Mono<Void>> sendAction;
 
 		/**
 		 * Creates a TurnSpec with the given send action.
-		 * @param sendAction supplier that returns the Mono<Void> to execute the send
+		 * @param sendAction returns the Mono<Void> to execute the send; it runs the given
+		 * Runnable once nothing can refuse the send any more, before it sends
 		 */
-		DefaultTurnSpec(java.util.function.Supplier<Mono<Void>> sendAction) {
+		DefaultTurnSpec(Function<Runnable, Mono<Void>> sendAction) {
 			this.sendAction = sendAction;
 		}
 
 		@Override
 		public Mono<String> text() {
 			// Lazy: send action triggers on subscribe, then collect all text
-			return sendAction.get()
-				.thenMany(receiveResponse())
-				.ofType(AssistantMessage.class)
+			return messages().ofType(AssistantMessage.class)
 				.map(AssistantMessage::text)
 				.filter(text -> !text.isEmpty())
 				.reduce(String::concat)
@@ -940,17 +964,28 @@ public class DefaultClaudeAsyncClient implements ClaudeAsyncClient {
 		@Override
 		public Flux<String> textStream() {
 			// Lazy: send action triggers on subscribe, then stream text chunks
-			return sendAction.get()
-				.thenMany(receiveResponse())
-				.ofType(AssistantMessage.class)
+			return messages().ofType(AssistantMessage.class)
 				.map(AssistantMessage::text)
 				.filter(text -> !text.isEmpty());
 		}
 
 		@Override
 		public Flux<Message> messages() {
-			// Lazy: send action triggers on subscribe, then stream all messages
-			return sendAction.get().thenMany(receiveResponse());
+			// Lazy: send action triggers on subscribe, then stream all messages. The turn
+			// opens before the prompt is sent: the CLI may answer before the send
+			// completes, and a message that arrives while no turn is open is in none.
+			return Flux.defer(() -> {
+				AtomicReference<Sinks.Many<Message>> turn = new AtomicReference<>();
+				return sendAction.apply(() -> turn.set(openTurn()))
+					.thenMany(Flux.defer(() -> turnMessages(turn.get())))
+					.doFinally(signal -> {
+						// A turn whose send failed or was cancelled is never subscribed.
+						Sinks.Many<Message> turnSink = turn.get();
+						if (turnSink != null) {
+							closeTurn(turnSink, signal);
+						}
+					});
+			});
 		}
 
 	}

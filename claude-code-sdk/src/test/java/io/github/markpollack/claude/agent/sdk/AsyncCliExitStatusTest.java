@@ -64,9 +64,7 @@ import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
  *
  * <p>
  * The CLI is a generated shell stub. Nothing here starts a real Claude CLI, needs
- * credentials, or bills model usage. Stubs that print before the turn's Flux is
- * subscribed wait briefly first, since the async client hands a turn only the messages
- * that arrive once it is subscribed.
+ * credentials, or bills model usage. The stubs answer as soon as they read the prompt.
  * </p>
  */
 @DisabledOnOs(OS.WINDOWS)
@@ -105,7 +103,6 @@ class AsyncCliExitStatusTest {
 	void nonZeroExitBeforeResultFailsTheTurn() throws Exception {
 		client = newClient(stubCli("""
 				read -r prompt
-				sleep 1
 				echo '%s'
 				echo 'Error: something broke' >&2
 				exit 3
@@ -199,7 +196,6 @@ class AsyncCliExitStatusTest {
 	void nonZeroExitInALaterTurnFailsThatTurn() throws Exception {
 		client = newClient(stubCli("""
 				read -r prompt
-				sleep 1
 				echo '%s'
 				echo '%s'
 				read -r prompt
@@ -221,7 +217,6 @@ class AsyncCliExitStatusTest {
 	void zeroExitBeforeResultCompletesQuietly() throws Exception {
 		client = newClient(stubCli("""
 				read -r prompt
-				sleep 1
 				echo '%s'
 				exit 0
 				""".formatted(INIT)));
@@ -261,7 +256,6 @@ class AsyncCliExitStatusTest {
 	void exitAfterResultFailsTheNextTurn() throws Exception {
 		client = newClient(stubCli("""
 				read -r prompt
-				sleep 1
 				echo '%s'
 				echo '%s'
 				exit 3
@@ -374,7 +368,6 @@ class AsyncCliExitStatusTest {
 	void normalTurnEndsAtItsResult() throws Exception {
 		client = newClient(stubCli("""
 				read -r prompt
-				sleep 1
 				echo '%s'
 				echo '%s'
 				while read -r line; do :; done
