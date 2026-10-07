@@ -29,6 +29,7 @@ import java.util.function.Predicate;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.github.markpollack.claude.agent.sdk.exceptions.ClaudeSDKException;
 import io.github.markpollack.claude.agent.sdk.exceptions.TransportException;
 import io.github.markpollack.claude.agent.sdk.hooks.HookRegistry;
 import io.github.markpollack.claude.agent.sdk.types.control.HookOutput;
@@ -74,6 +75,12 @@ class HookCallbackWireTest {
 
 	private static final String INITIALIZE_REFUSED = """
 			{"type":"control_response","response":{"subtype":"error","request_id":"%s","error":"hooks rejected"}}""";
+
+	private static final String CONTROL_SUCCESS = """
+			{"type":"control_response","response":{"subtype":"success","request_id":"%s","response":{}}}""";
+
+	private static final String CONTROL_REFUSED = """
+			{"type":"control_response","response":{"subtype":"error","request_id":"%s","error":"request rejected"}}""";
 
 	@TempDir
 	Path tempDir;
@@ -155,6 +162,56 @@ class HookCallbackWireTest {
 			}
 		}
 
+		@Test
+		@DisplayName("setPermissionMode completes once the CLI accepts it")
+		void setPermissionModeAccepted() throws Exception {
+			DefaultClaudeAsyncClient client = (DefaultClaudeAsyncClient) asyncClient(stubCli);
+			try {
+				client.connect().block(ARRIVAL_TIMEOUT);
+
+				client.setPermissionMode("plan").block(ARRIVAL_TIMEOUT);
+
+				assertThat(client.getCurrentPermissionMode()).isEqualTo("plan");
+			}
+			finally {
+				client.close().block(ARRIVAL_TIMEOUT);
+			}
+		}
+
+		@Test
+		@DisplayName("a refused setModel fails and keeps the current model")
+		void setModelRefused() throws Exception {
+			DefaultClaudeAsyncClient client = (DefaultClaudeAsyncClient) asyncClient(stubCli);
+			try {
+				client.connect().block(ARRIVAL_TIMEOUT);
+				String before = client.getCurrentModel();
+
+				assertThatThrownBy(() -> client.setModel("no-such-model").block(ARRIVAL_TIMEOUT))
+					.isInstanceOf(ClaudeSDKException.class)
+					.hasMessageContaining("request rejected");
+				assertThat(client.getCurrentModel()).isEqualTo(before);
+			}
+			finally {
+				client.close().block(ARRIVAL_TIMEOUT);
+			}
+		}
+
+		@Test
+		@DisplayName("a refused interrupt fails")
+		void interruptRefused() throws Exception {
+			ClaudeAsyncClient client = asyncClient(stubCli);
+			try {
+				client.connect().block(ARRIVAL_TIMEOUT);
+
+				assertThatThrownBy(() -> client.interrupt().block(ARRIVAL_TIMEOUT))
+					.isInstanceOf(ClaudeSDKException.class)
+					.hasMessageContaining("request rejected");
+			}
+			finally {
+				client.close().block(ARRIVAL_TIMEOUT);
+			}
+		}
+
 	}
 
 	private ClaudeAsyncClient asyncClient(String cli) {
@@ -223,8 +280,9 @@ class HookCallbackWireTest {
 	/**
 	 * Writes a stand-in for the Claude CLI: it records each line the SDK sends, answers
 	 * {@code initialize} with {@code initializeReply} (a printf format whose {@code %s}
-	 * is the request ID), and asks for the {@code hook_0} PreToolUse callback once a user
-	 * message arrives. It contacts nothing.
+	 * is the request ID), accepts {@code set_permission_mode}, refuses {@code set_model}
+	 * and {@code interrupt}, and asks for the {@code hook_0} PreToolUse callback once a
+	 * user message arrives. It contacts nothing.
 	 */
 	private String writeStubCli(String initializeReply) throws IOException {
 		Path stub = tempDir.resolve("claude-stub.sh");
@@ -236,19 +294,23 @@ class HookCallbackWireTest {
 		String script = """
 				#!/bin/sh
 				# Deterministic stand-in for the Claude CLI used by HookCallbackWireTest.
+				reply() {
+				    id=$(printf '%%s\\n' "$line" | sed -n 's/.*"request_id":"\\([^"]*\\)".*/\\1/p')
+				    printf "$1\\n" "$id"
+				}
 				while IFS= read -r line; do
 				    printf '%%s\\n' "$line" >> '%s'
 				    case "$line" in
-				        *'"subtype":"initialize"'*)
-				            id=$(printf '%%s\\n' "$line" | sed -n 's/.*"request_id":"\\([^"]*\\)".*/\\1/p')
-				            printf '%s\\n' "$id"
-				            ;;
+				        *'"subtype":"initialize"'*) reply '%s' ;;
+				        *'"subtype":"set_permission_mode"'*) reply '%s' ;;
+				        *'"subtype":"set_model"'*|*'"subtype":"interrupt"'*) reply '%s' ;;
 				        *'"type":"user"'*)
 				            printf '%%s\\n' '%s'
 				            ;;
 				    esac
 				done
-				""".formatted(recording.toAbsolutePath(), initializeReply, hookCallback);
+				""".formatted(recording.toAbsolutePath(), initializeReply, CONTROL_SUCCESS, CONTROL_REFUSED,
+				hookCallback);
 		Files.writeString(stub, script, StandardCharsets.UTF_8);
 		Files.setPosixFilePermissions(stub, PosixFilePermissions.fromString("rwxr-xr-x"));
 		return stub.toAbsolutePath().toString();

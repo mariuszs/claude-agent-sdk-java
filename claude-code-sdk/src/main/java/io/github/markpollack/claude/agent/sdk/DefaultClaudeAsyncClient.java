@@ -49,6 +49,7 @@ import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -410,58 +411,34 @@ public class DefaultClaudeAsyncClient implements ClaudeAsyncClient {
 
 	@Override
 	public Mono<Void> interrupt() {
-		return Mono.<Void>create(sink -> {
-			if (!connected.get() || closed.get()) {
-				sink.error(new IllegalStateException("Client is not connected"));
-				return;
-			}
-			try {
-				sendControlRequest(Map.of("subtype", "interrupt"));
-				sink.success();
-			}
-			catch (Exception e) {
-				sink.error(new TransportException("Failed to send interrupt", e));
-			}
-		}).subscribeOn(Schedulers.boundedElastic());
+		return awaitControlRequest(Map.of("subtype", "interrupt"));
 	}
 
 	@Override
 	public Mono<Void> setPermissionMode(String mode) {
-		return Mono.<Void>create(sink -> {
-			if (!connected.get() || closed.get()) {
-				sink.error(new IllegalStateException("Client is not connected"));
-				return;
-			}
-			try {
-				sendControlRequest(Map.of("subtype", "set_permission_mode", "mode", mode));
-				currentPermissionMode.set(mode);
-				sink.success();
-			}
-			catch (Exception e) {
-				sink.error(new TransportException("Failed to set permission mode", e));
-			}
-		}).subscribeOn(Schedulers.boundedElastic());
+		return awaitControlRequest(Map.of("subtype", "set_permission_mode", "mode", mode))
+			.doOnSuccess(ignored -> currentPermissionMode.set(mode));
 	}
 
 	@Override
 	public Mono<Void> setModel(String model) {
-		return Mono.<Void>create(sink -> {
+		Map<String, Object> request = new LinkedHashMap<>();
+		request.put("subtype", "set_model");
+		request.put("model", model);
+		return awaitControlRequest(request).doOnSuccess(ignored -> currentModel.set(model));
+	}
+
+	/**
+	 * Sends a control request on subscription and completes once the CLI accepts it. A
+	 * refusal or a missing reply fails the returned Mono, as the sync client throws.
+	 */
+	private Mono<Void> awaitControlRequest(Map<String, Object> request) {
+		return Mono.defer(() -> {
 			if (!connected.get() || closed.get()) {
-				sink.error(new IllegalStateException("Client is not connected"));
-				return;
+				return Mono.<Map<String, Object>>error(new IllegalStateException("Client is not connected"));
 			}
-			try {
-				Map<String, Object> request = new LinkedHashMap<>();
-				request.put("subtype", "set_model");
-				request.put("model", model);
-				sendControlRequest(request);
-				currentModel.set(model);
-				sink.success();
-			}
-			catch (Exception e) {
-				sink.error(new TransportException("Failed to set model", e));
-			}
-		}).subscribeOn(Schedulers.boundedElastic());
+			return sendControlRequest(request);
+		}).subscribeOn(Schedulers.boundedElastic()).then();
 	}
 
 	@Override
@@ -799,7 +776,11 @@ public class DefaultClaudeAsyncClient implements ClaudeAsyncClient {
 		}
 
 		logger.debug("Sent control request: id={}, subtype={}", requestId, request.get("subtype"));
-		return reply.asMono().timeout(timeout).doOnError(e -> pendingResponses.remove(requestId));
+		return reply.asMono()
+			.timeout(timeout)
+			.onErrorMap(TimeoutException.class,
+					e -> new ClaudeSDKException("Control request timed out: " + request.get("subtype"), e))
+			.doOnError(e -> pendingResponses.remove(requestId));
 	}
 
 	private void cleanup() {
