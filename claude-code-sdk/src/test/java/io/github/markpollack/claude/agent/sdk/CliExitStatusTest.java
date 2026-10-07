@@ -30,11 +30,13 @@ import java.util.concurrent.TimeUnit;
 
 import io.github.markpollack.claude.agent.sdk.exceptions.ResultException;
 import io.github.markpollack.claude.agent.sdk.exceptions.TransportException;
+import io.github.markpollack.claude.agent.sdk.hooks.HookRegistry;
 import io.github.markpollack.claude.agent.sdk.parsing.ParsedMessage;
 import io.github.markpollack.claude.agent.sdk.streaming.MessageReceiver;
 import io.github.markpollack.claude.agent.sdk.types.Message;
 import io.github.markpollack.claude.agent.sdk.types.ResultMessage;
 import io.github.markpollack.claude.agent.sdk.types.SystemMessage;
+import io.github.markpollack.claude.agent.sdk.types.control.HookOutput;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -528,6 +530,79 @@ class CliExitStatusTest {
 				assertThatThrownBy(() -> drain(client.receiveResponse(), new ArrayList<>())).isSameAs(first);
 				assertThatThrownBy(() -> client.responseReceiver().next()).isSameAs(first);
 			});
+		}
+	}
+
+	@Test
+	@DisplayName("a control request pending when the CLI exits fails at once with the exit status and stderr")
+	void pendingControlRequestFailsWithTheExitStatus() throws Exception {
+		String cli = stubCli("""
+				read -r request
+				echo 'Error: no model switch for you' >&2
+				exit 3
+				""");
+
+		try (ClaudeSyncClient client = newClient(cli)) {
+			client.connect();
+			long start = System.nanoTime();
+
+			assertThatThrownBy(() -> client.setModel("stub-model")).isInstanceOfSatisfying(TransportException.class,
+					e -> {
+						assertThat(e.getExitCode()).isEqualTo(3);
+						assertThat(e.getStderr()).isEqualTo("Error: no model switch for you");
+					});
+			assertThat(Duration.ofNanos(System.nanoTime() - start)).isLessThan(Duration.ofSeconds(5));
+		}
+	}
+
+	@Test
+	@DisplayName("a control request pending when the CLI's output ends normally fails at once")
+	void pendingControlRequestFailsOnAZeroExit() throws Exception {
+		String cli = stubCli("""
+				read -r request
+				exit 0
+				""");
+
+		try (ClaudeSyncClient client = newClient(cli)) {
+			client.connect();
+			long start = System.nanoTime();
+
+			assertThatThrownBy(() -> client.setModel("stub-model")).isInstanceOfSatisfying(TransportException.class,
+					e -> {
+						assertThat(e.getExitCode()).isZero();
+						assertThat(e).hasMessageStartingWith("Claude CLI output ended before it replied");
+					});
+			assertThat(Duration.ofNanos(System.nanoTime() - start)).isLessThan(Duration.ofSeconds(5));
+		}
+	}
+
+	@Test
+	@DisplayName("an initialize pending when the CLI reports an error result and exits fails connect() with that result")
+	void pendingInitializeFailsWithTheErrorResult() throws Exception {
+		String cli = stubCli("""
+				read -r initialize
+				echo '%s'
+				exit 1
+				""".formatted(errorResult("error_during_execution",
+				",\"errors\":[\"No conversation found with session ID: gone\"]")));
+		HookRegistry hooks = new HookRegistry();
+		hooks.registerPreToolUse("Bash", input -> HookOutput.allow());
+
+		try (ClaudeSyncClient client = ClaudeClient.sync()
+			.workingDirectory(tempDir)
+			.claudePath(cli)
+			.hookRegistry(hooks)
+			.timeout(TIMEOUT)
+			.build()) {
+			long start = System.nanoTime();
+
+			assertThatThrownBy(client::connect).isInstanceOf(TransportException.class)
+				.cause()
+				.isInstanceOfSatisfying(ResultException.class, e -> {
+					assertThat(e.getExitCode()).isEqualTo(1);
+					assertThat(e).hasMessageContaining("No conversation found with session ID: gone");
+				});
+			assertThat(Duration.ofNanos(System.nanoTime() - start)).isLessThan(Duration.ofSeconds(5));
 		}
 	}
 
